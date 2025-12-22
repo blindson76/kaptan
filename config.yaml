@@ -2,6 +2,8 @@
 log:
   level: info
 
+node_name: "${env.NODE_NAME}"
+
 consul:
   address: "${env.CONSUL_HTTP_ADDR}"
   datacenter: ""

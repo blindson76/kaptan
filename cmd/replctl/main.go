@@ -74,16 +74,19 @@ func main() {
 	}
 
 	// derive host info
-	hostname, _ := os.Hostname()
+	nodeName := cfg.NodeName
+	if nodeName == "" {
+		nodeName, _ = os.Hostname()
+	}
 
 	// derive controller IDs (unique per instance)
 	mongoControllerID := cfg.Tasks.MongoController.ControllerID
 	if mongoControllerID == "" && cfg.Tasks.MongoController.Enabled {
-		mongoControllerID = fmt.Sprintf("%s#%d", hostname, cfg.Tasks.MongoController.InstanceNumber)
+		mongoControllerID = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.MongoController.InstanceNumber)
 	}
 	kafkaControllerID := cfg.Tasks.KafkaController.ControllerID
 	if kafkaControllerID == "" && cfg.Tasks.KafkaController.Enabled {
-		kafkaControllerID = fmt.Sprintf("%s#%d", hostname, cfg.Tasks.KafkaController.InstanceNumber)
+		kafkaControllerID = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.KafkaController.InstanceNumber)
 	}
 
 	// Workers run ONCE at startup, as required.
@@ -97,7 +100,7 @@ func main() {
 			TempPort:   cfg.Tasks.MongoWorker.TempPort,
 			AdminUser:  cfg.Tasks.MongoWorker.AdminUser,
 			AdminPass:  cfg.Tasks.MongoWorker.AdminPass,
-			Host:       hostname,
+			Host:       nodeName,
 			Addr:       cfg.Tasks.MongoWorker.BindAddr,
 		}, st)
 		runOnce(ctx, "mongo-worker", func() error { return w.RunOnce(ctx) })
@@ -107,7 +110,7 @@ func main() {
 			WorkerID:       cfg.Tasks.KafkaWorker.WorkerID,
 			ReportKey:      cfg.Tasks.KafkaWorker.ReportKey,
 			MetaDirs:       cfg.Tasks.KafkaWorker.MetaDirs,
-			Host:           hostname,
+			Host:           nodeName,
 			BrokerAddr:     cfg.Tasks.KafkaWorker.BrokerAddr,
 			ControllerAddr: cfg.Tasks.KafkaWorker.ControllerAddr,
 		}, st)
@@ -146,7 +149,7 @@ func main() {
 			}
 			addr := cfg.Tasks.MongoAgent.Service.Address
 			if addr == "" {
-				addr, _ = os.Hostname()
+				addr = nodeName
 			}
 			svc = servicereg.Registration{
 				Name:    "mongo",
@@ -187,7 +190,7 @@ func main() {
 			}
 			addr := cfg.Tasks.KafkaAgent.Service.Address
 			if addr == "" {
-				addr, _ = os.Hostname()
+				addr = nodeName
 			}
 			// parse port from broker addr
 			port := 0
@@ -249,11 +252,15 @@ func main() {
 
 	// Generic services agent (runs user-defined services based on Consul orders)
 	if cfg.Tasks.ServicesAgent.Enabled {
+		svcAddr := cfg.Tasks.ServicesAgent.ServiceAddress
+		if svcAddr == "" {
+			svcAddr = nodeName
+		}
 		ag := serviceagent.New(serviceagent.Config{
 			AgentID:        cfg.Tasks.ServicesAgent.AgentID,
 			OrdersPrefix:   cfg.Tasks.ServicesAgent.OrdersPrefix,
 			AckPrefix:      cfg.Tasks.ServicesAgent.AckPrefix,
-			ServiceAddress: cfg.Tasks.ServicesAgent.ServiceAddress,
+			ServiceAddress: svcAddr,
 		}, st, reg)
 		go func() {
 			log.Printf("services_agent started")
@@ -267,7 +274,7 @@ func main() {
 	if cfg.Tasks.ServicesController.Enabled {
 		id := cfg.Tasks.ServicesController.ControllerID
 		if id == "" {
-			id = fmt.Sprintf("%s#%d", hostname, cfg.Tasks.ServicesController.InstanceNumber)
+			id = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.ServicesController.InstanceNumber)
 		}
 		// Map config services
 		svcDefs := make([]sctl.ServiceDef, 0, len(cfg.Tasks.ServicesController.Services))

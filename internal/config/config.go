@@ -16,6 +16,8 @@ type Config struct {
 		Level string `yaml:"level"`
 	} `yaml:"log"`
 
+	NodeName string `yaml:"node_name"`
+
 	Consul ConsulConfig `yaml:"consul"`
 	Tasks  TasksConfig  `yaml:"tasks"`
 }
