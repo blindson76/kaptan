@@ -25,6 +25,25 @@ tasks:
     initial_settle_duration: "3s"   # debounce window before choosing initial 3 members
     allow_degraded_single_member: false
 
+  mongo_agent:
+    enabled: true
+    agent_id: "${env.NODE_NAME}"
+    orders_key: "orders/mongo/${env.NODE_NAME}"
+    ack_key: "acks/mongo/${env.NODE_NAME}"
+    health_key: "health/mongo/${env.NODE_NAME}"
+    mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
+    mongosh_path: '${env.MONGO_TOOLS}/mongosh.exe'
+    dbpath: '${env.MONGO_DB_PATH}'
+    bind_ip: "${env.CSB_IP}"
+    port: 27017
+    replset_name: "rs0"
+    log_path: '${env.MONGO_LOG_PATH}'
+    service:
+      enabled: true
+      address: "${env.CSB_IP}"
+      ttl: "15s"
+      tags: ["mongo"]
+
   mongo_worker:
     enabled: true
     worker_id: "${env.NODE_NAME}"
@@ -61,23 +80,6 @@ tasks:
       - "H:/infra/data/kafka/2/meta"
 
 
-  mongo_agent:
-    enabled: true
-    agent_id: "${env.NODE_NAME}"
-    orders_key: "orders/mongo/${env.NODE_NAME}"
-    ack_key: "acks/mongo/${env.NODE_NAME}"
-    mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
-    mongosh_path: '${env.MONGO_TOOLS}/mongosh.exe'
-    dbpath: '${env.MONGO_DB_PATH}'
-    bind_ip: "${env.CSB_IP}"
-    port: 27017
-    replset_name: "rs0"
-    log_path: '${env.MONGO_LOG_PATH}'
-    service:
-      enabled: true
-      address: "${env.CSB_IP}"
-      ttl: "15s"
-      tags: ["mongo"]
 
   kafka_agent:
     enabled: false

@@ -142,6 +142,12 @@ func main() {
 
 	// Agents execute orders locally and register services with status/role.
 	if cfg.Tasks.MongoAgent.Enabled {
+		if cfg.Tasks.MongoAgent.AgentID == "" {
+			cfg.Tasks.MongoAgent.AgentID = nodeName
+		}
+		if cfg.Tasks.MongoAgent.HealthKey == "" {
+			cfg.Tasks.MongoAgent.HealthKey = fmt.Sprintf("health/mongo/%s", cfg.Tasks.MongoAgent.AgentID)
+		}
 		log.Printf("starting mongo_agent...")
 		svc := servicereg.Registration{}
 		if cfg.Tasks.MongoAgent.Service.Enabled {
@@ -174,6 +180,7 @@ func main() {
 			Port:        cfg.Tasks.MongoAgent.Port,
 			ReplSetName: cfg.Tasks.MongoAgent.ReplSetName,
 			LogPath:     cfg.Tasks.MongoAgent.LogPath,
+			HealthKey:   cfg.Tasks.MongoAgent.HealthKey,
 			Service:     svc,
 		}, st, reg)
 		go func() {

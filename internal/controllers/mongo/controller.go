@@ -224,8 +224,14 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			_ = c.loadSpec(ctx)
 			return nil
 		}).
-		PermitReentry(TrHealth).
-		PermitReentry(TrTimer).
+		PermitReentry(TrHealth, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.specAllHealthy()
+		}).
+		PermitReentry(TrTimer, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.specAllHealthy()
+		}).
 		Permit(TrHealth, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
 			log.Printf("[mongo] evaluating health after HEALTH trigger, current spec members: %v", c.spec)

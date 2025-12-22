@@ -19,12 +19,14 @@ import (
 	"github.com/umitbozkurt/consul-replctl/internal/orders"
 	"github.com/umitbozkurt/consul-replctl/internal/servicereg"
 	"github.com/umitbozkurt/consul-replctl/internal/store"
+	"github.com/umitbozkurt/consul-replctl/internal/types"
 )
 
 type Config struct {
 	AgentID   string
 	OrdersKey string
 	AckKey    string
+	HealthKey string
 
 	MongodPath  string
 	MongoshPath string
@@ -213,6 +215,7 @@ func (a *Agent) connectHost() string {
 }
 
 func (a *Agent) roleHeartbeat(ctx context.Context) {
+	log.Printf("[mongo-agent] starting role heartbeat for service check_id=%s", a.cfg.Service.CheckID)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -239,6 +242,24 @@ func (a *Agent) roleHeartbeat(ctx context.Context) {
 					_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, note)
 				} else {
 					_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, note)
+				}
+			}
+
+			log.Printf("[mongo-agent] healthKey=%s role heartbeat state=%d stateStr=%s rsid=%s optime=%s term=%v syncSource=%s ok=%v",
+				a.cfg.HealthKey, state, stateStr, rsid, optime, term, syncSource, ok)
+
+			// Publish health to KV for controller consumption.
+			if a.cfg.HealthKey != "" {
+				healthy := ok && (state == 1 || state == 2 || state == 7) // PRIMARY/SECONDARY/ARBITER considered healthy
+				h := types.HealthStatus{
+					ID:        a.cfg.AgentID,
+					Healthy:   healthy,
+					Reason:    note,
+					UpdatedAt: time.Now(),
+				}
+				log.Printf("[mongo-agent] publishing health status healthy=%v reason=%s", h.Healthy, h.Reason)
+				if err := a.kv.PutJSON(ctx, a.cfg.HealthKey, &h); err != nil {
+					log.Printf("[mongo-agent] health publish error: %v", err)
 				}
 			}
 		}
