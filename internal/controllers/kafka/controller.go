@@ -105,7 +105,9 @@ func (c *Controller) runActive(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-			c.candidates = v.([]types.CandidateReport)
+			snap := v.([]types.CandidateReport)
+			c.candidates = snap
+			log.Printf("[kafka] received candidate reports: total=%d eligible=%d", len(snap), countEligible(snap))
 			if len(c.spec.Members) == 0 && c.hasEnoughEligible(3) {
 				c.maybeStartOrExtendInitialWindow(time.Now())
 			}
@@ -342,6 +344,16 @@ func (c *Controller) needsReplace() bool {
 		}
 	}
 	return false
+}
+
+func countEligible(reports []types.CandidateReport) int {
+	n := 0
+	for _, r := range reports {
+		if r.Eligible {
+			n++
+		}
+	}
+	return n
 }
 
 func (c *Controller) replaceOnce(ctx context.Context) bool {
