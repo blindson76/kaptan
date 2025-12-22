@@ -1,0 +1,134 @@
+# Example config
+log:
+  level: info
+
+consul:
+  address: "http://127.0.0.1:8500"
+  datacenter: ""
+  token: "${env.CONSUL_HTTP_TOKEN}"
+  prefix: "replctl/v1"
+
+tasks:
+  mongo_controller:
+    enabled: true
+    instance_number: 1                 # set 1 on one node, 2 on another (standby), etc.
+    controller_id: ""                   # optional; if empty -> hostname + #instance_number
+    lock_key: "locks/mongo-controller"
+    state_key: "state/mongo-controller"
+    candidates_prefix: "candidates/mongo"
+    health_prefix: "health/mongo"
+    spec_key: "spec/mongo"
+    replica_set_id: "rs0"             # desired replica set name (_id in local.system.replset)
+    election_interval: "10s"
+    initial_settle_duration: "15s"   # debounce window before choosing initial 3 members
+    allow_degraded_single_member: true
+
+  mongo_worker:
+    enabled: true
+    worker_id: "${env.HOSTNAME}"
+    report_key: "candidates/mongo/${env.HOSTNAME}"
+    # mongod offline probe options
+    mongod_path: "C:/Program Files/MongoDB/Server/7.0/bin/mongod.exe"
+    dbpath: "H:/data/mongo"          # existing data dir
+    temp_port: 27028                # local temporary port for offline probe
+    admin_user: "admin"
+    admin_pass: "${env.MONGO_ADMIN_PASS}"
+
+  kafka_controller:
+    enabled: true
+    instance_number: 1
+    controller_id: ""
+    lock_key: "locks/kafka-controller"
+    state_key: "state/kafka-controller"
+    candidates_prefix: "candidates/kafka"
+    health_prefix: "health/kafka"
+    spec_key: "spec/kafka"
+    election_interval: "10s"
+    initial_settle_duration: "15s"   # debounce window before choosing initial 3 members
+    allow_degraded_single_member: true
+
+  kafka_worker:
+    enabled: true
+    worker_id: "${env.HOSTNAME}"
+    report_key: "candidates/kafka/${env.HOSTNAME}"
+    broker_addr: "${env.KAFKA_BROKER_ADDR}"        # e.g. 10.10.51.11:9092
+    controller_addr: "${env.KAFKA_CONTROLLER_ADDR}" # e.g. 10.10.51.11:9093
+    meta_dirs:
+      - "H:/infra/data/kafka/1/meta"
+      - "H:/infra/data/kafka/2/meta"
+
+
+mongo_agent:
+  enabled: false
+  agent_id: "${env.HOSTNAME}"
+  orders_key: "orders/mongo/${env.HOSTNAME}"
+  ack_key: "acks/mongo/${env.HOSTNAME}"
+  mongod_path: "C:/Program Files/MongoDB/Server/7.0/bin/mongod.exe"
+  mongosh_path: "C:/Program Files/MongoDB/Server/7.0/bin/mongosh.exe"
+  dbpath: "H:/data/mongo"
+  bind_ip: "0.0.0.0"
+  port: 27017
+  replset_name: "rs0"
+  log_path: "H:/data/mongo/mongod.log"
+  service:
+    enabled: true
+    address: "${env.SVC_ADDR}"
+    ttl: "15s"
+    tags: ["mongo"]
+
+kafka_agent:
+  enabled: false
+  agent_id: "${env.HOSTNAME}"
+  orders_key: "orders/kafka/${env.HOSTNAME}"
+  ack_key: "acks/kafka/${env.HOSTNAME}"
+  kafka_bin_dir: "H:/cots/kafka/bin/windows"
+  work_dir: "H:/infra/kafka"
+  log_dir: "H:/infra/data/kafka/log"
+  meta_log_dir: "H:/infra/data/kafka/meta"
+  broker_addr: "${env.KAFKA_BROKER_ADDR}"
+  controller_addr: "${env.KAFKA_CONTROLLER_ADDR}"
+  cluster_id: "${env.KAFKA_CLUSTER_ID}"
+  node_id: "${env.KAFKA_NODE_ID}"
+  service:
+    enabled: true
+    address: "${env.SVC_ADDR}"
+    ttl: "15s"
+    tags: ["kafka","kraf","combined"]
+
+
+services_controller:
+  enabled: false
+  instance_number: 1
+  controller_id: ""
+  lock_key: "locks/services-controller"
+  state_key: "state/services-controller"
+  kafka_candidates_prefix: "candidates/kafka"
+  mongo_candidates_prefix: "candidates/mongo"
+  wait_for: ["mongo","kafka"]
+  min_passing: 3
+  reconcile_interval: "10s"
+  services:
+    - name: "my-service-a"
+      instances: 2
+      tags: ["app","service-a"]
+      ttl: "15s"
+      start:
+        cmd: "C:/apps/service-a/service-a.exe"
+        args: ["--mode","${ROLE}","--mongo","${MONGO_URI}","--kafka","${KAFKA_BOOTSTRAP}"]
+        work_dir: "C:/apps/service-a"
+
+    - name: "my-service-b"
+      instances: 2
+      tags: ["app","service-b"]
+      ttl: "15s"
+      start:
+        cmd: "C:/apps/service-b/service-b.exe"
+        args: ["--role","${ROLE}"]
+        work_dir: "C:/apps/service-b"
+
+services_agent:
+  enabled: false
+  agent_id: "${env.HOSTNAME}"
+  orders_prefix: "orders/services"
+  ack_prefix: "acks/services"
+  service_address: "${env.SVC_ADDR}"
