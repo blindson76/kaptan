@@ -122,7 +122,7 @@ func (c *Controller) runActive(ctx context.Context) error {
 			if len(c.spec.Members) == 0 && c.hasEnoughEligible(3) {
 				c.maybeStartOrExtendInitialWindow(time.Now())
 			}
-			if err := c.sm.FireCtx(ctx, TrCandidates); err != nil {
+			if err := c.fireCandidates(ctx); err != nil {
 				log.Printf("[mongo] Fire CANDIDATES error: %v", err)
 			}
 
@@ -137,11 +137,36 @@ func (c *Controller) runActive(ctx context.Context) error {
 
 		case <-ticker.C:
 			c.logTimerDebug()
-			if err := c.sm.FireCtx(ctx, TrTimer); err != nil {
+			if err := c.fireTimer(ctx); err != nil {
 				log.Printf("[mongo] Fire TIMER error: %v", err)
 			}
 		}
 	}
+}
+
+func (c *Controller) fireCandidates(ctx context.Context) error {
+	state := c.ps.Get()
+	if state == string(StWaitCandidates) {
+		// Only need CANDIDATES in wait_candidates when degraded path is allowed.
+		if c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1) {
+			return c.sm.FireCtx(ctx, TrCandidates)
+		}
+		return nil
+	}
+	return c.sm.FireCtx(ctx, TrCandidates)
+}
+
+func (c *Controller) fireTimer(ctx context.Context) error {
+	state := c.ps.Get()
+	if state == string(StWaitCandidates) {
+		// Only fire timer when a guarded transition could succeed.
+		publishReady := c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
+		degradedReady := c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1)
+		if !publishReady && !degradedReady {
+			return nil
+		}
+	}
+	return c.sm.FireCtx(ctx, TrTimer)
 }
 
 func (c *Controller) configure(sm *stateless.StateMachine) {
@@ -344,9 +369,12 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		MongoWipeMembers:  wipe,
 	}
 	c.spec = spec
+	log.Printf("[mongo] publishing spec version=%d members=%v wipe=%v", c.specVersion, members, wipe)
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
 	if c.provider != nil {
-		_ = c.provider.PublishSpec(ctx, spec)
+		if err := c.provider.PublishSpec(ctx, spec); err != nil {
+			log.Printf("[mongo] provider publish error: %v", err)
+		}
 	}
 }
 

@@ -23,7 +23,7 @@ tasks:
     replica_set_id: "rs0"             # desired replica set name (_id in local.system.replset)
     election_interval: "10s"
     initial_settle_duration: "15s"   # debounce window before choosing initial 3 members
-    allow_degraded_single_member: true
+    allow_degraded_single_member: false
 
   mongo_worker:
     enabled: true
