@@ -1,1 +1,4 @@
 replctl.exe
+scripts/cots/**
+scripts/data/**
+scripts/logs/**
