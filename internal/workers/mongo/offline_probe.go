@@ -1,27 +1,29 @@
 package mongo
 
 import (
-    "bufio"
-    "context"
-    "errors"
-    "fmt"
-    "log"
-    "net"
-    "os/exec"
-    "path/filepath"
-    "time"
+	"bufio"
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
 
-    "go.mongodb.org/mongo-driver/bson"
-    "go.mongodb.org/mongo-driver/mongo"
-    "go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type OfflineProbeConfig struct {
-    MongodPath string
-    DBPath     string
-    Port       int
-    AdminUser  string
-    AdminPass  string
+	MongodPath string
+	DBPath     string
+	Port       int
+	AdminUser  string
+	AdminPass  string
 }
 
 // Probe starts a temporary local mongod WITHOUT replSet and WITHOUT auth,
@@ -32,159 +34,159 @@ type OfflineProbeConfig struct {
 // - It binds only to 127.0.0.1
 // - It uses a short timeout
 func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term int64, lastOplog time.Time, err error) {
-    if cfg.MongodPath == "" || cfg.DBPath == "" || cfg.Port == 0 {
-        return "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
-    }
+	if cfg.MongodPath == "" || cfg.DBPath == "" || cfg.Port == 0 {
+		return "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
+	}
 
-    if err := waitPortFree(cfg.Port); err != nil {
-        return "", 0, time.Time{}, fmt.Errorf("temp port not free: %w", err)
-    }
+	if err := waitPortFree(cfg.Port); err != nil {
+		return "", 0, time.Time{}, fmt.Errorf("temp port not free: %w", err)
+	}
 
-    // Start mongod
-    args := []string{
-        "--dbpath", cfg.DBPath,
-        "--port", fmt.Sprintf("%d", cfg.Port),
-        "--bind_ip", "127.0.0.1",
-        "--nounixsocket",
-        "--setParameter", "enableLocalhostAuthBypass=1",
-        "--logpath", filepath.Join(cfg.DBPath, "replctl-offline-probe.log"),
-        "--logappend",
-    }
-    cmd := exec.CommandContext(ctx, cfg.MongodPath, args...)
-    stdout, _ := cmd.StdoutPipe()
-    stderr, _ := cmd.StderrPipe()
+	// Start mongod
+	args := []string{
+		"--dbpath", cfg.DBPath,
+		"--port", fmt.Sprintf("%d", cfg.Port),
+		"--bind_ip", "127.0.0.1",
+		"--nounixsocket",
+		"--setParameter", "enableLocalhostAuthBypass=1",
+		"--logpath", filepath.Join(cfg.DBPath, "replctl-offline-probe.log"),
+		"--logappend",
+	}
+	cmd := exec.CommandContext(ctx, cfg.MongodPath, args...)
+	stdout, _ := cmd.StdoutPipe()
+	stderr, _ := cmd.StderrPipe()
 
-    if err := cmd.Start(); err != nil {
-        return "", 0, time.Time{}, err
-    }
-    done := make(chan struct{})
-    go func() {
-        defer close(done)
-        scan := func(r *bufio.Scanner) {
-            for r.Scan() {
-                // keep logs light
-            }
-        }
-        if stdout != nil {
-            scan(bufio.NewScanner(stdout))
-        }
-        if stderr != nil {
-            scan(bufio.NewScanner(stderr))
-        }
-    }()
+	if err := cmd.Start(); err != nil {
+		return "", 0, time.Time{}, err
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		scan := func(r *bufio.Scanner) {
+			for r.Scan() {
+				// keep logs light
+			}
+		}
+		if stdout != nil {
+			scan(bufio.NewScanner(stdout))
+		}
+		if stderr != nil {
+			scan(bufio.NewScanner(stderr))
+		}
+	}()
 
-    // connect
-    uri := fmt.Sprintf("mongodb://127.0.0.1:%d/?directConnection=true", cfg.Port)
-    cli, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
-    if err != nil {
-        _ = stopProcess(cmd, done)
-        return "", 0, time.Time{}, err
-    }
-    defer func() { _ = cli.Disconnect(context.Background()) }()
+	// connect
+	uri := fmt.Sprintf("mongodb://127.0.0.1:%d/?directConnection=true", cfg.Port)
+	cli, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		_ = stopProcess(cmd, done)
+		return "", 0, time.Time{}, err
+	}
+	defer func() { _ = cli.Disconnect(context.Background()) }()
 
-    // wait ping
-    pingCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-    defer cancel()
-    for {
-        if err := cli.Database("admin").RunCommand(pingCtx, bson.D{{Key: "ping", Value: 1}}).Err(); err == nil {
-            break
-        }
-        if pingCtx.Err() != nil {
-            _ = stopProcess(cmd, done)
-            return "", 0, time.Time{}, fmt.Errorf("mongod not ready: %w", pingCtx.Err())
-        }
-        time.Sleep(300 * time.Millisecond)
-    }
+	// wait ping
+	pingCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	for {
+		if err := cli.Database("admin").RunCommand(pingCtx, bson.D{{Key: "ping", Value: 1}}).Err(); err == nil {
+			break
+		}
+		if pingCtx.Err() != nil {
+			_ = stopProcess(cmd, done)
+			return "", 0, time.Time{}, fmt.Errorf("mongod not ready: %w", pingCtx.Err())
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 
-    // read local.system.replset
-    localDB := cli.Database("local")
-    var replDoc bson.M
-    err = localDB.Collection("system.replset").FindOne(ctx, bson.D{}).Decode(&replDoc)
-    if err == nil {
-        if id, ok := replDoc["_id"].(string); ok {
-            replSetID = id
-        }
-    }
+	// read local.system.replset
+	localDB := cli.Database("local")
+	var replDoc bson.M
+	err = localDB.Collection("system.replset").FindOne(ctx, bson.D{}).Decode(&replDoc)
+	if err == nil {
+		if id, ok := replDoc["_id"].(string); ok {
+			replSetID = id
+		}
+	}
 
-    // read last oplog entry
-    cur, err2 := localDB.Collection("oplog.rs").Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "$natural", Value: -1}}).SetLimit(1))
-    if err2 == nil {
-        defer cur.Close(ctx)
-        if cur.Next(ctx) {
-            var doc bson.M
-            _ = cur.Decode(&doc)
-            // ts is bson.Timestamp {T, I}
-            if ts, ok := doc["ts"].(bson.Timestamp); ok {
-                lastOplog = time.Unix(int64(ts.T), 0)
-            }
-            if t, ok := doc["t"].(int64); ok { // term may be stored as "t" depending on version
-                term = t
-            }
-            if term == 0 {
-                if t32, ok := doc["t"].(int32); ok {
-                    term = int64(t32)
-                }
-            }
-        }
-    }
+	// read last oplog entry
+	cur, err2 := localDB.Collection("oplog.rs").Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "$natural", Value: -1}}).SetLimit(1))
+	if err2 == nil {
+		defer cur.Close(ctx)
+		if cur.Next(ctx) {
+			var doc bson.M
+			_ = cur.Decode(&doc)
+			// ts is bson.Timestamp {T, I}
+			if ts, ok := doc["ts"].(primitive.Timestamp); ok {
+				lastOplog = time.Unix(int64(ts.T), 0)
+			}
+			if t, ok := doc["t"].(int64); ok { // term may be stored as "t" depending on version
+				term = t
+			}
+			if term == 0 {
+				if t32, ok := doc["t"].(int32); ok {
+					term = int64(t32)
+				}
+			}
+		}
+	}
 
-    // ensure admin user exists (best-effort)
-    if cfg.AdminUser != "" && cfg.AdminPass != "" {
-        ensureAdminUser(ctx, cli, cfg.AdminUser, cfg.AdminPass)
-    }
+	// ensure admin user exists (best-effort)
+	if cfg.AdminUser != "" && cfg.AdminPass != "" {
+		ensureAdminUser(ctx, cli, cfg.AdminUser, cfg.AdminPass)
+	}
 
-    // remove replset config document (best-effort) to allow standalone start later
-    _, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
+	// remove replset config document (best-effort) to allow standalone start later
+	_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
 
-    _ = stopProcess(cmd, done)
-    return replSetID, term, lastOplog, nil
+	_ = stopProcess(cmd, done)
+	return replSetID, term, lastOplog, nil
 }
 
 func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) {
-    // check usersInfo
-    var res bson.M
-    _ = cli.Database("admin").RunCommand(ctx, bson.D{
-        {Key: "usersInfo", Value: bson.D{{Key: "user", Value: user}, {Key: "db", Value: "admin"}}},
-    }).Decode(&res)
-    // If already exists, do nothing.
-    if users, ok := res["users"].(bson.A); ok && len(users) > 0 {
-        return
-    }
-    // create user
-    err := cli.Database("admin").RunCommand(ctx, bson.D{
-        {Key: "createUser", Value: user},
-        {Key: "pwd", Value: pass},
-        {Key: "roles", Value: bson.A{
-            bson.D{{Key: "role", Value: "root"}, {Key: "db", Value: "admin"}},
-        }},
-    }).Err()
-    if err != nil {
-        log.Printf("[mongo-worker] createUser failed: %v", err)
-    }
+	// check usersInfo
+	var res bson.M
+	_ = cli.Database("admin").RunCommand(ctx, bson.D{
+		{Key: "usersInfo", Value: bson.D{{Key: "user", Value: user}, {Key: "db", Value: "admin"}}},
+	}).Decode(&res)
+	// If already exists, do nothing.
+	if users, ok := res["users"].(bson.A); ok && len(users) > 0 {
+		return
+	}
+	// create user
+	err := cli.Database("admin").RunCommand(ctx, bson.D{
+		{Key: "createUser", Value: user},
+		{Key: "pwd", Value: pass},
+		{Key: "roles", Value: bson.A{
+			bson.D{{Key: "role", Value: "root"}, {Key: "db", Value: "admin"}},
+		}},
+	}).Err()
+	if err != nil {
+		log.Printf("[mongo-worker] createUser failed: %v", err)
+	}
 }
 
 func waitPortFree(port int) error {
-    l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-    if err != nil {
-        return err
-    }
-    _ = l.Close()
-    return nil
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return err
+	}
+	_ = l.Close()
+	return nil
 }
 
 func stopProcess(cmd *exec.Cmd, done <-chan struct{}) error {
-    // try graceful
-    _ = cmd.Process.Signal(exec.Interrupt)
-    select {
-    case <-done:
-        return nil
-    case <-time.After(2 * time.Second):
-    }
-    _ = cmd.Process.Kill()
-    select {
-    case <-done:
-        return nil
-    case <-time.After(2 * time.Second):
-        return errors.New("mongod probe process did not exit")
-    }
+	// try graceful
+	_ = cmd.Process.Signal(os.Interrupt)
+	select {
+	case <-done:
+		return nil
+	case <-time.After(2 * time.Second):
+	}
+	_ = cmd.Process.Kill()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(2 * time.Second):
+		return errors.New("mongod probe process did not exit")
+	}
 }
