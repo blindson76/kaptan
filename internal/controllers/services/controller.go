@@ -86,6 +86,9 @@ func (c *Controller) runActive(ctx context.Context) error {
 	ps := fsm.NewPersistedState(c.kv, c.cfg.StateKey, string(StBoot))
 	c.sm = common.NewMachine(ctx, ps)
 	c.configure(c.sm)
+	c.sm.OnTransitioned(func(_ context.Context, t stateless.Transition) {
+		log.Printf("[services] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination)
+	})
 
 	_ = c.sm.FireCtx(ctx, TrStart)
 	ticker := time.NewTicker(c.cfg.ReconcileInterval)

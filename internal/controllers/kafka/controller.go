@@ -86,6 +86,9 @@ func (c *Controller) runActive(ctx context.Context) error {
 	c.ps = fsm.NewPersistedState(c.kv, c.cfg.StateKey, string(StBoot))
 	c.sm = common.NewMachine(ctx, c.ps)
 	c.configure(c.sm)
+	c.sm.OnTransitioned(func(_ context.Context, t stateless.Transition) {
+		log.Printf("[kafka] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination)
+	})
 
 	candCh := c.kv.WatchPrefixJSON(ctx, c.cfg.CandidatesPrefix, func() any { return &[]types.CandidateReport{} })
 	healthCh := c.kv.WatchPrefixJSON(ctx, c.cfg.HealthPrefix, func() any { return &[]types.HealthStatus{} })

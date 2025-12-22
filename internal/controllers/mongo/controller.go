@@ -88,6 +88,9 @@ func (c *Controller) runActive(ctx context.Context) error {
 	c.ps = fsm.NewPersistedState(c.kv, c.cfg.StateKey, string(StBoot))
 	c.sm = common.NewMachine(ctx, c.ps)
 	c.configure(c.sm)
+	c.sm.OnTransitioned(func(_ context.Context, t stateless.Transition) {
+		log.Printf("[mongo] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination)
+	})
 
 	// watch candidate + health snapshots
 	candCh := c.kv.WatchPrefixJSON(ctx, c.cfg.CandidatesPrefix, func() any { return &[]types.CandidateReport{} })
