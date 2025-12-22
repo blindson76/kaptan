@@ -75,6 +75,7 @@ type MongoWorkerConfig struct {
 
 	MongodPath string `yaml:"mongod_path"`
 	DBPath     string `yaml:"dbpath"`
+	BindAddr   string `yaml:"bind_addr"`
 	TempPort   int    `yaml:"temp_port"`
 
 	AdminUser string `yaml:"admin_user"`

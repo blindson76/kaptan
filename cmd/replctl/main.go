@@ -93,10 +93,12 @@ func main() {
 			ReportKey:  cfg.Tasks.MongoWorker.ReportKey,
 			MongodPath: cfg.Tasks.MongoWorker.MongodPath,
 			DBPath:     cfg.Tasks.MongoWorker.DBPath,
+			BindAddr:   cfg.Tasks.MongoWorker.BindAddr,
 			TempPort:   cfg.Tasks.MongoWorker.TempPort,
 			AdminUser:  cfg.Tasks.MongoWorker.AdminUser,
 			AdminPass:  cfg.Tasks.MongoWorker.AdminPass,
 			Host:       hostname,
+			Addr:       cfg.Tasks.MongoWorker.BindAddr,
 		}, st)
 		runOnce(ctx, "mongo-worker", func() error { return w.RunOnce(ctx) })
 	}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -21,6 +22,7 @@ import (
 type OfflineProbeConfig struct {
 	MongodPath string
 	DBPath     string
+	Bind       string
 	Port       int
 	AdminUser  string
 	AdminPass  string
@@ -38,7 +40,12 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 		return "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
 	}
 
-	if err := waitPortFree(cfg.Port); err != nil {
+	bind := cfg.Bind
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+
+	if err := waitPortFree(bind, cfg.Port); err != nil {
 		return "", 0, time.Time{}, fmt.Errorf("temp port not free: %w", err)
 	}
 
@@ -46,12 +53,10 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	args := []string{
 		"--dbpath", cfg.DBPath,
 		"--port", fmt.Sprintf("%d", cfg.Port),
-		"--bind_ip", "127.0.0.1",
-		"--nounixsocket",
-		"--setParameter", "enableLocalhostAuthBypass=1",
+		"--bind_ip", bind,
 		"--logpath", filepath.Join(cfg.DBPath, "replctl-offline-probe.log"),
-		"--logappend",
 	}
+	log.Printf("[mongo-worker] offline probe mongod command: %s %s", cfg.MongodPath, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, cfg.MongodPath, args...)
 	stdout, _ := cmd.StdoutPipe()
 	stderr, _ := cmd.StderrPipe()
@@ -76,7 +81,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	}()
 
 	// connect
-	uri := fmt.Sprintf("mongodb://127.0.0.1:%d/?directConnection=true", cfg.Port)
+	uri := fmt.Sprintf("mongodb://%s/?directConnection=true", net.JoinHostPort(bind, fmt.Sprintf("%d", cfg.Port)))
 	cli, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
 		_ = stopProcess(cmd, done)
@@ -165,8 +170,8 @@ func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) 
 	}
 }
 
-func waitPortFree(port int) error {
-	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+func waitPortFree(bind string, port int) error {
+	l, err := net.Listen("tcp", net.JoinHostPort(bind, fmt.Sprintf("%d", port)))
 	if err != nil {
 		return err
 	}

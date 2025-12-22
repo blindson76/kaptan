@@ -3,7 +3,7 @@ log:
   level: info
 
 consul:
-  address: "http://127.0.0.1:8500"
+  address: "${env.CONSUL_HTTP_ADDR}"
   datacenter: ""
   token: "${env.CONSUL_HTTP_TOKEN}"
   prefix: "replctl/v1"
@@ -25,17 +25,18 @@ tasks:
 
   mongo_worker:
     enabled: true
-    worker_id: "${env.HOSTNAME}"
-    report_key: "candidates/mongo/${env.HOSTNAME}"
+    worker_id: "${env.NODE_NAME}"
+    report_key: "candidates/mongo/${env.NODE_NAME}"
+    bind_addr: "${env.MONGO_ADDR}"
     # mongod offline probe options
-    mongod_path: "C:/Program Files/MongoDB/Server/7.0/bin/mongod.exe"
-    dbpath: "H:/data/mongo"          # existing data dir
+    mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
+    dbpath: '${env.MONGO_DB_PATH}'          # existing data dir
     temp_port: 27028                # local temporary port for offline probe
     admin_user: "admin"
-    admin_pass: "${env.MONGO_ADMIN_PASS}"
+    admin_pass: "123"
 
   kafka_controller:
-    enabled: true
+    enabled: false
     instance_number: 1
     controller_id: ""
     lock_key: "locks/kafka-controller"
@@ -48,7 +49,7 @@ tasks:
     allow_degraded_single_member: true
 
   kafka_worker:
-    enabled: true
+    enabled: false
     worker_id: "${env.HOSTNAME}"
     report_key: "candidates/kafka/${env.HOSTNAME}"
     broker_addr: "${env.KAFKA_BROKER_ADDR}"        # e.g. 10.10.51.11:9092
@@ -63,16 +64,16 @@ mongo_agent:
   agent_id: "${env.HOSTNAME}"
   orders_key: "orders/mongo/${env.HOSTNAME}"
   ack_key: "acks/mongo/${env.HOSTNAME}"
-  mongod_path: "C:/Program Files/MongoDB/Server/7.0/bin/mongod.exe"
-  mongosh_path: "C:/Program Files/MongoDB/Server/7.0/bin/mongosh.exe"
-  dbpath: "H:/data/mongo"
-  bind_ip: "0.0.0.0"
+  mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
+  mongosh_path: '${env.MONGO_TOOLS}/mongosh.exe'
+  dbpath: '${env.MONGO_DB_PATH}'
+  bind_ip: "${env.CSB_IP}"
   port: 27017
   replset_name: "rs0"
-  log_path: "H:/data/mongo/mongod.log"
+  log_path: '${env.MONGO_LOG_PATH}'
   service:
     enabled: true
-    address: "${env.SVC_ADDR}"
+    address: "${env.CSB_IP}"
     ttl: "15s"
     tags: ["mongo"]
 
