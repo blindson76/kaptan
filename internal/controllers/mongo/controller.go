@@ -228,6 +228,7 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 		PermitReentry(TrTimer).
 		Permit(TrHealth, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
+			log.Printf("[mongo] evaluating health after HEALTH trigger, current spec members: %v", c.spec)
 			return c.specAllHealthy()
 		}).
 		Permit(TrTimer, StMonitor, func(context.Context, ...any) bool {

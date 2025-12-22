@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/umitbozkurt/consul-replctl/internal/orders"
@@ -14,10 +15,11 @@ import (
 type Provider struct {
 	KV store.KV
 
-	MongoOrdersPrefix string
-	MongoAckPrefix    string
-	KafkaOrdersPrefix string
-	KafkaAckPrefix    string
+	MongoOrdersPrefix     string
+	MongoAckPrefix        string
+	MongoCandidatesPrefix string
+	KafkaOrdersPrefix     string
+	KafkaAckPrefix        string
 
 	KafkaCandidatesPrefix string
 
@@ -27,6 +29,38 @@ type Provider struct {
 
 func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) error {
 	epoch := spec.Version
+	if p.MongoCandidatesPrefix == "" {
+		p.MongoCandidatesPrefix = "candidates/mongo"
+	}
+	candByID := map[string]types.CandidateReport{}
+	var cands []types.CandidateReport
+	if err := p.KV.ListJSON(ctx, p.MongoCandidatesPrefix, &cands); err == nil {
+		for _, c := range cands {
+			candByID[c.ID] = c
+		}
+	}
+	buildHosts := func(ids []string) []string {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			host := id
+			if c, ok := candByID[id]; ok {
+				h := c.Addr
+				if h == "" {
+					h = c.Host
+				}
+				if h != "" {
+					if strings.Contains(h, ":") {
+						host = h
+					} else {
+						host = fmt.Sprintf("%s:%d", h, 27017)
+					}
+				}
+			}
+			out = append(out, host)
+		}
+		return out
+	}
+	hostMembers := buildHosts(spec.Members)
 	for _, id := range spec.Members {
 		if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
 			_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
@@ -39,7 +73,7 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 	if len(spec.Members) > 0 {
 		_ = p.issueAndWait(ctx, orders.KindMongo, spec.Members[0], orders.ActionInit, epoch, map[string]any{
-			"members":     spec.Members,
+			"members":     hostMembers,
 			"replSetName": spec.MongoReplicaSetID,
 		})
 	}
@@ -180,12 +214,13 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 	}
 	log.Printf("[orders] publish kind=%s target=%s action=%s epoch=%d payload=%v", kind, target, action, epoch, payload)
 
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		var ack orders.Ack
 		ok, err := p.KV.GetJSON(ctx, fmt.Sprintf("%s/%s", ap, target), &ack)
 		if err == nil && ok && ack.Epoch == epoch && ack.Action == action {
 			if ack.Ok {
+				log.Printf("[orders] ack received kind=%s target=%s action=%s epoch=%d", kind, target, action, epoch)
 				return nil
 			}
 			return fmt.Errorf("%s %s failed: %s", kind, action, ack.Message)
@@ -196,5 +231,6 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 		case <-time.After(1 * time.Second):
 		}
 	}
+	log.Printf("[orders] ack timeout kind=%s target=%s action=%s epoch=%d", kind, target, action, epoch)
 	return nil
 }

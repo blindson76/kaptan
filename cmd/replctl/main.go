@@ -66,6 +66,7 @@ func main() {
 		KV:                    st,
 		MongoOrdersPrefix:     "orders/mongo",
 		MongoAckPrefix:        "acks/mongo",
+		MongoCandidatesPrefix: "candidates/mongo",
 		MongoLastAppliedKey:   "provider/mongo/last_applied_spec",
 		KafkaOrdersPrefix:     "orders/kafka",
 		KafkaAckPrefix:        "acks/kafka",
@@ -141,6 +142,7 @@ func main() {
 
 	// Agents execute orders locally and register services with status/role.
 	if cfg.Tasks.MongoAgent.Enabled {
+		log.Printf("starting mongo_agent...")
 		svc := servicereg.Registration{}
 		if cfg.Tasks.MongoAgent.Service.Enabled {
 			ttl := cfg.Tasks.MongoAgent.Service.TTL

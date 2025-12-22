@@ -55,8 +55,8 @@ rem =========================
 rem Data directories
 rem =========================
 set "NOMAD_DATA_DIR=%BASE%data\nomad\%CONSOLE_ID%"
-set "MONGO_DB_PATH=%BASE%data\mongo\%CONSOLE_ID%\data"
-set "MONGO_LOG_PATH=%BASE%data\mongo\%CONSOLE_ID%\log"
+set "MONGO_DB_PATH=%BASE%data\mongo\%CONSOLE_ID%"
+set "MONGO_LOG_PATH=%BASE%data\mongo\%CONSOLE_ID%\mongo.log"
 set "CONSUL_DATA_DIR=%BASE%data\consul\%CONSOLE_ID%"
 set "KAFKA_DATA_DIR=%BASE%data\kafka\%CONSOLE_ID%\data"
 set "KAFKA_META_DIR=%BASE%data\kafka\%CONSOLE_ID%\meta"

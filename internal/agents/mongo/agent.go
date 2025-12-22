@@ -48,6 +48,11 @@ func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	log.Printf("[mongo-agent] starting agent_id=%s orders_key=%s ack_key=%s bind=%s port=%d dbpath=%s",
+		a.cfg.AgentID, a.cfg.OrdersKey, a.cfg.AckKey, nz(a.cfg.BindIP, "0.0.0.0"), nzInt(a.cfg.Port, 27017), a.cfg.DBPath)
+	if a.reg != nil && a.cfg.Service.ID != "" {
+		log.Printf("[mongo-agent] service registration id=%s check=%s addr=%s port=%d", a.cfg.Service.ID, a.cfg.Service.CheckID, a.cfg.Service.Address, a.cfg.Service.Port)
+	}
 	if a.reg != nil && a.cfg.Service.ID != "" {
 		_ = a.reg.Register(ctx, a.cfg.Service)
 		defer a.reg.Deregister(context.Background(), a.cfg.Service.ID)
@@ -69,7 +74,9 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 			ord := lst[len(lst)-1]
+			log.Printf("[mongo-agent] observed order target=%s action=%s epoch=%d (watch=%s)", ord.TargetID, ord.Action, ord.Epoch, a.cfg.OrdersKey)
 			if ord.TargetID != a.cfg.AgentID {
+				log.Printf("[mongo-agent] ignoring order for target %s (this agent: %s)", ord.TargetID, a.cfg.AgentID)
 				continue
 			}
 			a.execute(ctx, ord)
@@ -83,6 +90,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 
 	switch ord.Action {
 	case orders.ActionWipe:
+		log.Printf("[mongo-agent] action wipe dbpath=%s epoch=%d", a.cfg.DBPath, ord.Epoch)
 		err = wipeDir(a.cfg.DBPath)
 	case orders.ActionStart:
 		repl := a.cfg.ReplSetName
@@ -108,10 +116,13 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	if err != nil {
 		ack.Ok = false
 		ack.Message = err.Error()
+		log.Printf("[mongo-agent] action %s epoch=%d failed: %v", ord.Action, ord.Epoch, err)
 	} else {
 		ack.Ok = true
+		log.Printf("[mongo-agent] action %s epoch=%d ok", ord.Action, ord.Epoch)
 	}
-	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
+	err = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
+	log.Printf("[mongo-agent] ack published action=%s epoch=%d ok=%v, err=%v", ord.Action, ord.Epoch, ack.Ok, err)
 }
 
 func wipeDir(dir string) error {
@@ -134,6 +145,7 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 		"--logpath", nz(a.cfg.LogPath, filepath.Join(a.cfg.DBPath, "mongod.log")),
 		"--logappend",
 	}
+	log.Printf("[mongo-agent] exec mongod: %s %s", a.cfg.MongodPath, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, a.cfg.MongodPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -145,7 +157,8 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 }
 
 func (a *Agent) mongoClient(ctx context.Context) (*mongo.Client, error) {
-	uri := fmt.Sprintf("mongodb://127.0.0.1:%d/?directConnection=true", nzInt(a.cfg.Port, 27017))
+	host := a.connectHost()
+	uri := fmt.Sprintf("mongodb://%s:%d/?directConnection=true", host, nzInt(a.cfg.Port, 27017))
 	return mongo.Connect(ctx, options.Client().ApplyURI(uri))
 }
 
@@ -180,11 +193,23 @@ func buildReplCfg(repl string, members []any) string {
 	return fmt.Sprintf("{ _id:%q, members:[%s] }", repl, arr)
 }
 func (a *Agent) runMongosh(ctx context.Context, js string) error {
-	uri := fmt.Sprintf("mongodb://127.0.0.1:%d/?directConnection=true", nzInt(a.cfg.Port, 27017))
+	host := a.connectHost()
+	uri := fmt.Sprintf("mongodb://%s:%d/?directConnection=true", host, nzInt(a.cfg.Port, 27017))
+	log.Printf("[mongo-agent] exec mongosh: %s %s --quiet --eval %q", a.cfg.MongoshPath, uri, js)
 	cmd := exec.CommandContext(ctx, a.cfg.MongoshPath, uri, "--quiet", "--eval", js)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func (a *Agent) connectHost() string {
+	ip := strings.TrimSpace(a.cfg.BindIP)
+	switch ip {
+	case "", "0.0.0.0", "::", "::0":
+		return "127.0.0.1"
+	default:
+		return ip
+	}
 }
 
 func (a *Agent) roleHeartbeat(ctx context.Context) {
