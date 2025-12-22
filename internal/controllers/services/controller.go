@@ -68,8 +68,8 @@ func (c *Controller) Run(ctx context.Context) error {
 	return common.RunLeaderLoop(ctx, c.locker, c.cfg.LockKey, c.cfg.ControllerID, c.runActive)
 }
 
-type State string
-type Trigger string
+type State = string
+type Trigger = string
 
 const (
 	StBoot      State = "boot"

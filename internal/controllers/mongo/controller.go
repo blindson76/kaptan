@@ -13,8 +13,8 @@ import (
 	"github.com/umitbozkurt/consul-replctl/internal/types"
 )
 
-type State string
-type Trigger string
+type State = string
+type Trigger = string
 
 const (
 	StBoot           State = "boot"
@@ -99,7 +99,9 @@ func (c *Controller) runActive(ctx context.Context) error {
 	// Load existing spec if any (so standby->active continues)
 	_ = c.loadSpec(ctx)
 
-	_ = c.sm.FireCtx(ctx, TrStart)
+	if err := c.sm.FireCtx(ctx, TrStart); err != nil {
+		log.Printf("[mongo] Fire START error: %v", err)
+	}
 
 	ticker := time.NewTicker(c.cfg.ElectionInterval)
 	defer ticker.Stop()
@@ -120,17 +122,24 @@ func (c *Controller) runActive(ctx context.Context) error {
 			if len(c.spec.Members) == 0 && c.hasEnoughEligible(3) {
 				c.maybeStartOrExtendInitialWindow(time.Now())
 			}
-			_ = c.sm.FireCtx(ctx, TrCandidates)
+			if err := c.sm.FireCtx(ctx, TrCandidates); err != nil {
+				log.Printf("[mongo] Fire CANDIDATES error: %v", err)
+			}
 
 		case v, ok := <-healthCh:
 			if !ok {
 				return nil
 			}
 			c.health = v.([]types.HealthStatus)
-			_ = c.sm.FireCtx(ctx, TrHealth)
+			if err := c.sm.FireCtx(ctx, TrHealth); err != nil {
+				log.Printf("[mongo] Fire HEALTH error: %v", err)
+			}
 
 		case <-ticker.C:
-			_ = c.sm.FireCtx(ctx, TrTimer)
+			c.logTimerDebug()
+			if err := c.sm.FireCtx(ctx, TrTimer); err != nil {
+				log.Printf("[mongo] Fire TIMER error: %v", err)
+			}
 		}
 	}
 }
@@ -151,8 +160,7 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			}
 			return nil
 		}).
-		PermitReentry(TrCandidates).
-		PermitReentry(TrTimer).
+		Ignore(TrHealth).
 		Permit(TrTimer, StPublish, func(context.Context, ...any) bool {
 			// publish only after settle window elapsed
 			return c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
@@ -252,6 +260,15 @@ func (c *Controller) initialWindowElapsed(now time.Time) bool {
 		return false
 	}
 	return !now.Before(c.initialDeadline)
+}
+
+func (c *Controller) logTimerDebug() {
+	state := c.ps.Get()
+	eligible := len(c.eligibleCandidates())
+	deadline := c.initialDeadline
+	now := time.Now()
+	log.Printf("[mongo] timer tick state=%s eligible=%d deadline=%s elapsed=%t",
+		state, eligible, deadline.Format(time.RFC3339), c.initialWindowElapsed(now))
 }
 
 func (c *Controller) eligibleCandidates() []types.CandidateReport {

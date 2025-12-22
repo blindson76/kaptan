@@ -13,8 +13,8 @@ import (
 	"github.com/umitbozkurt/consul-replctl/internal/types"
 )
 
-type State string
-type Trigger string
+type State = string
+type Trigger = string
 
 const (
 	StBoot           State = "boot"
@@ -140,8 +140,8 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			}
 			return nil
 		}).
-		PermitReentry(TrCandidates).
-		PermitReentry(TrTimer).
+		Ignore(TrCandidates).
+		Ignore(TrTimer).
 		Permit(TrTimer, StPublish, func(context.Context, ...any) bool {
 			return c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
 		}).
