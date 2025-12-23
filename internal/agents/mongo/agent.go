@@ -29,7 +29,6 @@ type Config struct {
 	HealthKey string
 
 	MongodPath  string
-	MongoshPath string
 	DBPath      string
 	BindIP      string
 	Port        int

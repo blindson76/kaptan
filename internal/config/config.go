@@ -12,10 +12,6 @@ import (
 )
 
 type Config struct {
-	Log struct {
-		Level string `yaml:"level"`
-	} `yaml:"log"`
-
 	NodeName string `yaml:"node_name"`
 
 	Consul ConsulConfig `yaml:"consul"`
@@ -62,7 +58,6 @@ type KafkaControllerConfig struct {
 	CandidatesPrefix          string        `yaml:"candidates_prefix"`
 	HealthPrefix              string        `yaml:"health_prefix"`
 	SpecKey                   string        `yaml:"spec_key"`
-	ReplicaSetID              string        `yaml:"replica_set_id"`
 	ElectionInterval          time.Duration `yaml:"election_interval"`
 	InitialSettleDuration     time.Duration `yaml:"initial_settle_duration"`
 	AllowDegradedSingleMember bool          `yaml:"allow_degraded_single_member"`
@@ -153,7 +148,6 @@ type MongoAgentConfig struct {
 	WorkerID string `yaml:"worker_id"`
 
 	MongodPath  string `yaml:"mongod_path"`
-	MongoshPath string `yaml:"mongosh_path"`
 	DBPath      string `yaml:"dbpath"`
 	BindIP      string `yaml:"bind_ip"`
 	Port        int    `yaml:"port"`

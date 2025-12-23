@@ -1,7 +1,3 @@
-# Example config
-log:
-  level: info
-
 node_name: "${env.NODE_NAME}"
 
 consul:
@@ -34,7 +30,6 @@ tasks:
     report_key: "candidates/mongo/${env.NODE_NAME}"
     health_key: "health/mongo/${env.NODE_NAME}"
     mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
-    mongosh_path: '${env.MONGO_TOOLS}/mongosh.exe'
     dbpath: '${env.MONGO_DB_PATH}'
     bind_ip: "${env.CSB_IP}"
     bind_addr: "${env.MONGO_ADDR}"

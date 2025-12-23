@@ -172,7 +172,6 @@ func main() {
 			OrdersKey:   cfg.Tasks.MongoAgent.OrdersKey,
 			AckKey:      cfg.Tasks.MongoAgent.AckKey,
 			MongodPath:  cfg.Tasks.MongoAgent.MongodPath,
-			MongoshPath: cfg.Tasks.MongoAgent.MongoshPath,
 			DBPath:      cfg.Tasks.MongoAgent.DBPath,
 			BindIP:      cfg.Tasks.MongoAgent.BindIP,
 			Port:        cfg.Tasks.MongoAgent.Port,
