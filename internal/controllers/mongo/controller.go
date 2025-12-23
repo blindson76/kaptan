@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/qmuntal/stateless"
@@ -42,6 +43,7 @@ type Config struct {
 	HealthPrefix              string
 	SpecKey                   string
 	ReplicaSetID              string
+	ReplicaSetUUID            string
 	ElectionInterval          time.Duration
 	InitialSettleDuration     time.Duration
 	AllowDegradedSingleMember bool
@@ -249,9 +251,15 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			_ = c.loadSpec(ctx)
 			return nil
 		}).
-		PermitReentry(TrHealth).
+		PermitReentry(TrHealth, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.needsReplace()
+		}).
 		PermitReentry(TrCandidates).
-		PermitReentry(TrTimer).
+		PermitReentry(TrTimer, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.needsReplace()
+		}).
 		Permit(TrHealth, StReconcile, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
 			return c.needsReplace()
@@ -350,6 +358,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 	if len(eligible) < want {
 		want = len(eligible)
 	}
+	desiredUUID := c.desiredReplicaSetUUID(eligible)
 	members := make([]string, 0, want)
 	for i := 0; i < want; i++ {
 		members = append(members, eligible[i].ID)
@@ -359,8 +368,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
-				// If candidate previously belonged to a different replica set, it must be wiped
-				if c.cfg.ReplicaSetID != "" && cr.LastSeenReplicaSetID != "" && cr.LastSeenReplicaSetID != c.cfg.ReplicaSetID {
+				if c.shouldWipe(cr, desiredUUID) {
 					wipe[id] = true
 				}
 			}
@@ -368,12 +376,13 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 	}
 
 	spec := types.ReplicaSpec{
-		Kind:              types.CandidateMongo,
-		Members:           members,
-		UpdatedAt:         time.Now(),
-		Version:           c.specVersion,
-		MongoReplicaSetID: c.cfg.ReplicaSetID,
-		MongoWipeMembers:  wipe,
+		Kind:                types.CandidateMongo,
+		Members:             members,
+		UpdatedAt:           time.Now(),
+		Version:             c.specVersion,
+		MongoReplicaSetID:   c.cfg.ReplicaSetID,
+		MongoReplicaSetUUID: desiredUUID,
+		MongoWipeMembers:    wipe,
 	}
 	c.spec = spec
 	log.Printf("[mongo] publishing spec version=%d members=%v wipe=%v", c.specVersion, members, wipe)
@@ -482,12 +491,12 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	members[failedIdx] = replacement
 
 	c.specVersion++
+	desiredUUID := c.desiredReplicaSetUUID(eligible)
 	wipe := map[string]bool{}
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
-				// If candidate previously belonged to a different replica set, it must be wiped
-				if c.cfg.ReplicaSetID != "" && cr.LastSeenReplicaSetID != "" && cr.LastSeenReplicaSetID != c.cfg.ReplicaSetID {
+				if c.shouldWipe(cr, desiredUUID) {
 					wipe[id] = true
 				}
 			}
@@ -495,12 +504,13 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	}
 
 	spec := types.ReplicaSpec{
-		Kind:              types.CandidateMongo,
-		Members:           members,
-		UpdatedAt:         time.Now(),
-		Version:           c.specVersion,
-		MongoReplicaSetID: c.cfg.ReplicaSetID,
-		MongoWipeMembers:  wipe,
+		Kind:                types.CandidateMongo,
+		Members:             members,
+		UpdatedAt:           time.Now(),
+		Version:             c.specVersion,
+		MongoReplicaSetID:   c.cfg.ReplicaSetID,
+		MongoReplicaSetUUID: desiredUUID,
+		MongoWipeMembers:    wipe,
 	}
 	c.spec = spec
 
@@ -509,4 +519,33 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		_ = c.provider.PublishSpec(ctx, spec)
 	}
 	return true
+}
+
+func (c *Controller) shouldWipe(cr types.CandidateReport, desiredUUID string) bool {
+	if c.cfg.ReplicaSetID != "" && cr.LastSeenReplicaSetID != "" && cr.LastSeenReplicaSetID != c.cfg.ReplicaSetID {
+		return true
+	}
+	if desiredUUID != "" && cr.LastSeenReplicaSetUUID != "" &&
+		!strings.EqualFold(cr.LastSeenReplicaSetUUID, desiredUUID) {
+		return true
+	}
+	return false
+}
+
+func (c *Controller) desiredReplicaSetUUID(eligible []types.CandidateReport) string {
+	// highest priority: explicit config override
+	if c.cfg.ReplicaSetUUID != "" {
+		return c.cfg.ReplicaSetUUID
+	}
+	// carry over from previously published spec
+	if c.spec.MongoReplicaSetUUID != "" {
+		return c.spec.MongoReplicaSetUUID
+	}
+	// otherwise, take the first non-empty UUID from eligible candidates
+	for _, cr := range eligible {
+		if cr.LastSeenReplicaSetUUID != "" {
+			return cr.LastSeenReplicaSetUUID
+		}
+	}
+	return ""
 }

@@ -5,64 +5,66 @@ import "time"
 type CandidateKind string
 
 const (
-    CandidateMongo CandidateKind = "mongo"
-    CandidateKafka CandidateKind = "kafka"
+	CandidateMongo CandidateKind = "mongo"
+	CandidateKafka CandidateKind = "kafka"
 )
 
 type CandidateReport struct {
-    ID        string        `json:"id"`
-    Kind      CandidateKind `json:"kind"`
-    Host      string        `json:"host"`
-    Addr      string        `json:"addr,omitempty"` // optional (mongo/kafka listen addr)
-    Meta      map[string]string `json:"meta,omitempty"`
+	ID   string            `json:"id"`
+	Kind CandidateKind     `json:"kind"`
+	Host string            `json:"host"`
+	Addr string            `json:"addr,omitempty"` // optional (mongo/kafka listen addr)
+	Meta map[string]string `json:"meta,omitempty"`
 
-    // Offline probe summary
-    LastSeenReplicaSetID string    `json:"lastSeenReplicaSetId,omitempty"`
-    LastTerm             int64     `json:"lastTerm,omitempty"`
-    LastOplogTs          time.Time `json:"lastOplogTs,omitempty"`
+	// Offline probe summary
+	LastSeenReplicaSetID   string    `json:"lastSeenReplicaSetId,omitempty"`
+	LastSeenReplicaSetUUID string    `json:"lastSeenReplicaSetUuid,omitempty"`
+	LastTerm               int64     `json:"lastTerm,omitempty"`
+	LastOplogTs            time.Time `json:"lastOplogTs,omitempty"`
 
-    KafkaClusterID string `json:"kafkaClusterId,omitempty"`
-    KafkaNodeID    string `json:"kafkaNodeId,omitempty"`
-    KafkaBrokerAddr     string `json:"kafkaBrokerAddr,omitempty"`
-    KafkaControllerAddr string `json:"kafkaControllerAddr,omitempty"`
+	KafkaClusterID      string `json:"kafkaClusterId,omitempty"`
+	KafkaNodeID         string `json:"kafkaNodeId,omitempty"`
+	KafkaBrokerAddr     string `json:"kafkaBrokerAddr,omitempty"`
+	KafkaControllerAddr string `json:"kafkaControllerAddr,omitempty"`
 
-    Eligible bool   `json:"eligible"`
-    Reason   string `json:"reason,omitempty"`
+	Eligible bool   `json:"eligible"`
+	Reason   string `json:"reason,omitempty"`
 
-    UpdatedAt time.Time `json:"updatedAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type HealthStatus struct {
-    ID        string    `json:"id"`
-    Healthy   bool      `json:"healthy"`
-    Reason    string    `json:"reason,omitempty"`
-    UpdatedAt time.Time `json:"updatedAt"`
+	ID        string    `json:"id"`
+	Healthy   bool      `json:"healthy"`
+	Reason    string    `json:"reason,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 type ReplicaSpec struct {
-    Kind      CandidateKind `json:"kind"`
-    Members   []string      `json:"members"` // candidate IDs
-    UpdatedAt time.Time     `json:"updatedAt"`
-    Version   int64         `json:"version"`
+	Kind      CandidateKind `json:"kind"`
+	Members   []string      `json:"members"` // candidate IDs
+	UpdatedAt time.Time     `json:"updatedAt"`
+	Version   int64         `json:"version"`
 
-    // Mongo-specific hints
-    MongoReplicaSetID   string            `json:"mongoReplicaSetId,omitempty"`
-    MongoWipeMembers    map[string]bool   `json:"mongoWipeMembers,omitempty"`
+	// Mongo-specific hints
+	MongoReplicaSetID   string          `json:"mongoReplicaSetId,omitempty"`
+	MongoReplicaSetUUID string          `json:"mongoReplicaSetUuid,omitempty"`
+	MongoWipeMembers    map[string]bool `json:"mongoWipeMembers,omitempty"`
 
-    // Kafka-specific hints (used by provider/job templates)
-    KafkaMode             string   `json:"kafkaMode,omitempty"` // "combined"
-    KafkaDynamicVoter     bool     `json:"kafkaDynamicVoter,omitempty"`
-    KafkaBootstrapServers []string `json:"kafkaBootstrapServers,omitempty"` // controller.quorum.bootstrap.servers
+	// Kafka-specific hints (used by provider/job templates)
+	KafkaMode             string   `json:"kafkaMode,omitempty"` // "combined"
+	KafkaDynamicVoter     bool     `json:"kafkaDynamicVoter,omitempty"`
+	KafkaBootstrapServers []string `json:"kafkaBootstrapServers,omitempty"` // controller.quorum.bootstrap.servers
 }
 
-func (h HealthStatus) IsHealthy() bool { return h.Healthy }
+func (h HealthStatus) IsHealthy() bool  { return h.Healthy }
 func (c CandidateReport) GetId() string { return c.ID }
 func (c CandidateReport) Less(other CandidateReport) bool {
-    // newest first
-    return c.UpdatedAt.After(other.UpdatedAt)
+	// newest first
+	return c.UpdatedAt.After(other.UpdatedAt)
 }
 func (h HealthStatus) GetId() string { return h.ID }
 func (h HealthStatus) Less(other HealthStatus) bool {
-    return h.UpdatedAt.After(other.UpdatedAt)
+	return h.UpdatedAt.After(other.UpdatedAt)
 }
 func (s ReplicaSpec) GetMembers() []string { return s.Members }

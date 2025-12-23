@@ -119,7 +119,7 @@ goto end
 echo Waiting Consul to be ready at %CONSUL_HTTP_ADDR% ...
 node "%BASE%wait_nomad.js" "%CONSUL_HTTP_ADDR%"
 
-start "Node-Worker-%CONSOLE_ID%" cmd /k go run -C C:\Users\ubozkurt\Downloads\kaptan .\cmd\replctl
+start "Node-Worker-%CONSOLE_ID%" /min cmd /k go run -C C:\Users\ubozkurt\Downloads\kaptan .\cmd\replctl
 goto :cmd
 rem =========================
 rem Start Nomad (server+client)

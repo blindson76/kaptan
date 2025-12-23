@@ -3,6 +3,7 @@ package mongo
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -35,9 +36,9 @@ type OfflineProbeConfig struct {
 // This is intentionally conservative:
 // - It binds only to 127.0.0.1
 // - It uses a short timeout
-func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term int64, lastOplog time.Time, err error) {
+func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replSetUUID string, term int64, lastOplog time.Time, err error) {
 	if cfg.MongodPath == "" || cfg.DBPath == "" || cfg.Port == 0 {
-		return "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
+		return "", "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
 	}
 
 	bind := cfg.Bind
@@ -46,7 +47,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	}
 
 	if err := waitPortFree(bind, cfg.Port); err != nil {
-		return "", 0, time.Time{}, fmt.Errorf("temp port not free: %w", err)
+		return "", "", 0, time.Time{}, fmt.Errorf("temp port not free: %w", err)
 	}
 
 	// Start mongod
@@ -62,7 +63,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		return "", 0, time.Time{}, err
+		return "", "", 0, time.Time{}, err
 	}
 	done := make(chan struct{})
 	go func() {
@@ -85,7 +86,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	cli, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
 		_ = stopProcess(cmd, done)
-		return "", 0, time.Time{}, err
+		return "", "", 0, time.Time{}, err
 	}
 	defer func() { _ = cli.Disconnect(context.Background()) }()
 
@@ -98,7 +99,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 		}
 		if pingCtx.Err() != nil {
 			_ = stopProcess(cmd, done)
-			return "", 0, time.Time{}, fmt.Errorf("mongod not ready: %w", pingCtx.Err())
+			return "", "", 0, time.Time{}, fmt.Errorf("mongod not ready: %w", pingCtx.Err())
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -108,9 +109,8 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	var replDoc bson.M
 	err = localDB.Collection("system.replset").FindOne(ctx, bson.D{}).Decode(&replDoc)
 	if err == nil {
-		if id, ok := replDoc["_id"].(string); ok {
-			replSetID = id
-		}
+		replSetID = extractReplSetID(replDoc)
+		replSetUUID = extractReplSetUUID(replDoc)
 	}
 
 	// read last oplog entry
@@ -144,7 +144,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, term 
 	_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
 
 	_ = stopProcess(cmd, done)
-	return replSetID, term, lastOplog, nil
+	return replSetID, replSetUUID, term, lastOplog, nil
 }
 
 func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) {
@@ -168,6 +168,65 @@ func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) 
 	if err != nil {
 		log.Printf("[mongo-worker] createUser failed: %v", err)
 	}
+}
+
+func extractReplSetID(doc bson.M) string {
+	if id, ok := doc["_id"].(string); ok && id != "" {
+		return id
+	}
+	if cfg, ok := doc["config"].(bson.M); ok {
+		if id, ok := cfg["_id"].(string); ok && id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func extractReplSetUUID(doc bson.M) string {
+	if u := uuidFromVal(doc["replicaSetId"]); u != "" {
+		return u
+	}
+	if u := uuidFromVal(doc["uuid"]); u != "" {
+		return u
+	}
+	if cfg, ok := doc["config"].(bson.M); ok {
+		if u := uuidFromVal(cfg["replicaSetId"]); u != "" {
+			return u
+		}
+		if u := uuidFromVal(cfg["uuid"]); u != "" {
+			return u
+		}
+	}
+	if settings, ok := doc["settings"].(bson.M); ok {
+		if u := uuidFromVal(settings["replicaSetId"]); u != "" {
+			return u
+		}
+	}
+	return ""
+}
+
+func uuidFromVal(v any) string {
+	switch t := v.(type) {
+	case primitive.Binary:
+		if len(t.Data) == 16 {
+			return formatUUID(t.Data)
+		}
+		if len(t.Data) > 0 {
+			return hex.EncodeToString(t.Data)
+		}
+	case primitive.ObjectID:
+		return t.Hex()
+	case string:
+		return t
+	}
+	return ""
+}
+
+func formatUUID(b []byte) string {
+	if len(b) != 16 {
+		return hex.EncodeToString(b)
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func waitPortFree(bind string, port int) error {
