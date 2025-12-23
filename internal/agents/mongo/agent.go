@@ -174,34 +174,46 @@ func (a *Agent) shutdown(ctx context.Context) error {
 }
 
 func (a *Agent) rsInitiate(ctx context.Context, repl string, members []any) error {
-	cfg := buildReplCfg(nz(repl, a.cfg.ReplSetName), members)
-	js := fmt.Sprintf("rs.initiate(%s)", cfg)
-	return a.runMongosh(ctx, js)
+	repl = nz(repl, a.cfg.ReplSetName)
+	cfg := buildReplCfgDoc(repl, members, 1)
+	cli, err := a.mongoClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer cli.Disconnect(context.Background())
+	cmd := bson.D{{Key: "replSetInitiate", Value: cfg}}
+	log.Printf("[mongo-agent] replSetInitiate config=%v", cfg)
+	return cli.Database("admin").RunCommand(ctx, cmd).Err()
 }
 func (a *Agent) rsReconfig(ctx context.Context, repl string, members []any) error {
-	cfg := buildReplCfg(nz(repl, a.cfg.ReplSetName), members)
-	js := fmt.Sprintf("rs.reconfig(%s,{force:true})", cfg)
-	return a.runMongosh(ctx, js)
+	repl = nz(repl, a.cfg.ReplSetName)
+	cfg := buildReplCfgDoc(repl, members, time.Now().Unix())
+	cli, err := a.mongoClient(ctx)
+	if err != nil {
+		return err
+	}
+	defer cli.Disconnect(context.Background())
+	cmd := bson.D{{Key: "replSetReconfig", Value: cfg}, {Key: "force", Value: true}}
+	log.Printf("[mongo-agent] replSetReconfig config=%v", cfg)
+	return cli.Database("admin").RunCommand(ctx, cmd).Err()
 }
-func buildReplCfg(repl string, members []any) string {
-	arr := ""
+func buildReplCfgDoc(repl string, members []any, version int64) bson.M {
+	mems := make([]bson.M, 0, len(members))
 	for i, m := range members {
 		id, _ := m.(string)
-		if i > 0 {
-			arr += ","
+		if id == "" {
+			continue
 		}
-		arr += fmt.Sprintf("{ _id:%d, host:%q }", i, id)
+		mems = append(mems, bson.M{"_id": i, "host": id})
 	}
-	return fmt.Sprintf("{ _id:%q, members:[%s] }", repl, arr)
-}
-func (a *Agent) runMongosh(ctx context.Context, js string) error {
-	host := a.connectHost()
-	uri := fmt.Sprintf("mongodb://%s:%d/?directConnection=true", host, nzInt(a.cfg.Port, 27017))
-	log.Printf("[mongo-agent] exec mongosh: %s %s --quiet --eval %q", a.cfg.MongoshPath, uri, js)
-	cmd := exec.CommandContext(ctx, a.cfg.MongoshPath, uri, "--quiet", "--eval", js)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	cfg := bson.M{
+		"_id":     repl,
+		"members": mems,
+	}
+	if version > 0 {
+		cfg["version"] = version
+	}
+	return cfg
 }
 
 func (a *Agent) connectHost() string {
