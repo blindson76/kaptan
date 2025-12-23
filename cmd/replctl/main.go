@@ -184,6 +184,8 @@ func main() {
 			Port:        cfg.Tasks.MongoAgent.Port,
 			ReplSetName: cfg.Tasks.MongoAgent.ReplSetName,
 			LogPath:     cfg.Tasks.MongoAgent.LogPath,
+			AdminUser:   cfg.Tasks.MongoAgent.AdminUser,
+			AdminPass:   cfg.Tasks.MongoAgent.AdminPass,
 			HealthKey:   cfg.Tasks.MongoAgent.HealthKey,
 			SpecKey:     cfg.Tasks.MongoAgent.SpecKey,
 			Service:     svc,

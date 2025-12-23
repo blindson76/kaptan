@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -36,6 +37,9 @@ type Config struct {
 	ReplSetName string
 	LogPath     string
 
+	AdminUser string
+	AdminPass string
+
 	Service servicereg.Registration
 }
 
@@ -48,6 +52,11 @@ type Agent struct {
 	activeService servicereg.Registration
 	activeSlot    int
 	regCancel     context.CancelFunc
+
+	mongodMu           sync.Mutex
+	mongodCmd          *exec.Cmd
+	mongodExpectedExit bool
+	mongodKeyFilePath  string
 }
 
 func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
@@ -137,7 +146,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	if err != nil {
 		ack.Ok = false
 		ack.Message = err.Error()
-		log.Printf("[mongo-agent] action %s epoch=%d failed: %v", ord.Action, ord.Epoch, err)
+		log.Printf("%s", redf("[mongo-agent] action %s epoch=%d failed: %v", ord.Action, ord.Epoch, err))
 	} else {
 		ack.Ok = true
 		log.Printf("[mongo-agent] action %s epoch=%d ok", ord.Action, ord.Epoch)
@@ -158,6 +167,10 @@ func wipeDir(dir string) error {
 }
 
 func (a *Agent) startMongod(ctx context.Context, repl string) error {
+	keyFilePath, err := a.ensureKeyFile()
+	if err != nil {
+		return err
+	}
 	args := []string{
 		"--dbpath", a.cfg.DBPath,
 		"--bind_ip", nz(a.cfg.BindIP, "0.0.0.0"),
@@ -165,7 +178,16 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 		"--replSet", repl,
 		"--logpath", nz(a.cfg.LogPath, filepath.Join(a.cfg.DBPath, "mongod.log")),
 		"--logappend",
+		"--auth",
+		"--keyFile", keyFilePath,
 	}
+	a.mongodMu.Lock()
+	if a.mongodCmd != nil && a.mongodCmd.Process != nil && a.mongodCmd.ProcessState == nil {
+		log.Printf("[mongo-agent] mongod already running pid=%d, skipping start", a.mongodCmd.Process.Pid)
+		a.mongodMu.Unlock()
+		return nil
+	}
+	a.mongodMu.Unlock()
 	log.Printf("[mongo-agent] exec mongod: %s %s", a.cfg.MongodPath, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, a.cfg.MongodPath, args...)
 	cmd.Stdout = os.Stdout
@@ -173,23 +195,99 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	a.mongodMu.Lock()
+	a.mongodCmd = cmd
+	a.mongodExpectedExit = false
+	a.mongodMu.Unlock()
 	log.Printf("[mongo-agent] started mongod pid=%d", cmd.Process.Pid)
+	go a.watchMongod(ctx, cmd)
 	return nil
 }
 
 func (a *Agent) mongoClient(ctx context.Context) (*mongo.Client, error) {
 	host := a.connectHost()
 	uri := fmt.Sprintf("mongodb://%s:%d/?directConnection=true", host, nzInt(a.cfg.Port, 27017))
-	return mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	opts := options.Client().ApplyURI(uri)
+	if a.cfg.AdminUser != "" {
+		opts.SetAuth(options.Credential{
+			Username:   a.cfg.AdminUser,
+			Password:   a.cfg.AdminPass,
+			AuthSource: "admin",
+		})
+	}
+	return mongo.Connect(ctx, opts)
 }
 
 func (a *Agent) shutdown(ctx context.Context) error {
+	a.setMongodExpectedExit(true)
 	cli, err := a.mongoClient(ctx)
 	if err != nil {
+		a.setMongodExpectedExit(false)
 		return err
 	}
 	defer cli.Disconnect(context.Background())
 	return cli.Database("admin").RunCommand(ctx, bson.D{{Key: "shutdown", Value: 1}}).Err()
+}
+
+func (a *Agent) watchMongod(ctx context.Context, cmd *exec.Cmd) {
+	err := cmd.Wait()
+	a.mongodMu.Lock()
+	expected := a.mongodExpectedExit
+	if a.mongodCmd == cmd {
+		a.mongodCmd = nil
+	}
+	a.mongodExpectedExit = false
+	a.mongodMu.Unlock()
+	if ctx.Err() != nil || expected {
+		log.Printf("[mongo-agent] mongod exited (expected): %v", err)
+		return
+	}
+	reason := "mongod exited"
+	if err != nil {
+		reason = fmt.Sprintf("mongod exited: %v", err)
+	}
+	log.Printf("%s", redf("[mongo-agent] mongod exited unexpectedly: %v", err))
+	a.stopServiceRegistration()
+	a.publishUnhealthy(reason)
+}
+
+func (a *Agent) setMongodExpectedExit(v bool) {
+	a.mongodMu.Lock()
+	a.mongodExpectedExit = v
+	a.mongodMu.Unlock()
+}
+
+func (a *Agent) publishUnhealthy(reason string) {
+	if a.cfg.HealthKey == "" {
+		return
+	}
+	meta := map[string]string{}
+	if a.activeService.ID != "" {
+		meta["serviceId"] = a.activeService.ID
+	}
+	if a.activeService.CheckID != "" {
+		meta["checkId"] = a.activeService.CheckID
+	}
+	if a.activeService.Address != "" {
+		meta["address"] = a.activeService.Address
+	}
+	if a.activeService.Port > 0 {
+		meta["port"] = fmt.Sprintf("%d", a.activeService.Port)
+	}
+	if len(a.activeService.Tags) > 0 {
+		meta["tags"] = strings.Join(a.activeService.Tags, ",")
+	}
+	h := types.HealthStatus{
+		ID:          a.cfg.AgentID,
+		Healthy:     false,
+		Reason:      reason,
+		Note:        reason,
+		ServiceMeta: meta,
+		UpdatedAt:   time.Now(),
+	}
+	if err := a.kv.PutJSON(context.Background(), a.cfg.HealthKey, &h); err != nil {
+		log.Printf("%s", redf("[mongo-agent] health publish error: %v", err))
+	}
 }
 
 func (a *Agent) rsInitiate(ctx context.Context, repl string, members []any) error {
@@ -274,7 +372,7 @@ func (a *Agent) updateServiceRegistration(ctx context.Context, spec types.Replic
 		}
 		a.stopServiceRegistration()
 		if err := a.reg.Register(ctx, newReg); err != nil {
-			log.Printf("[mongo-agent] service register failed: %v", err)
+			log.Printf("%s", redf("[mongo-agent] service register failed: %v", err))
 			return
 		}
 		a.activeService = newReg
@@ -404,6 +502,9 @@ func nzInt(v, d int) int {
 	}
 	return v
 }
+func redf(format string, args ...any) string {
+	return fmt.Sprintf("\x1b[31m"+format+"\x1b[0m", args...)
+}
 
 func mongoStateStr(state int) string {
 	switch state {
@@ -430,6 +531,25 @@ func mongoStateStr(state int) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+func (a *Agent) ensureKeyFile() (string, error) {
+	a.mongodMu.Lock()
+	defer a.mongodMu.Unlock()
+	if a.mongodKeyFilePath != "" {
+		return a.mongodKeyFilePath, nil
+	}
+	f, err := os.CreateTemp("", "mongod-keyfile-*")
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(f.Name(), []byte("MONGOSECRET"), 0o600); err != nil {
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	a.mongodKeyFilePath = f.Name()
+	log.Printf("[mongo-agent] created keyFile at %s", a.mongodKeyFilePath)
+	return a.mongodKeyFilePath, nil
 }
 
 func (a *Agent) buildServiceNote(state int, stateStr string, rsid string, optime string, term any, syncSource string, progress map[string]any) string {

@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -91,7 +92,7 @@ func (c *Controller) runActive(ctx context.Context) error {
 	c.sm = common.NewMachine(ctx, c.ps)
 	c.configure(c.sm)
 	c.sm.OnTransitioned(func(_ context.Context, t stateless.Transition) {
-		log.Printf("[mongo] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination)
+		log.Printf("%s", yellowf("[mongo] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination))
 	})
 
 	// watch candidate + health snapshots
@@ -226,13 +227,22 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			_ = c.loadSpec(ctx)
 			return nil
 		}).
+		Ignore(TrCandidates).
+		Permit(TrHealth, StReconcile, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return c.needsReplace(true)
+		}).
+		Permit(TrTimer, StReconcile, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return c.needsReplace(true)
+		}).
 		PermitReentry(TrHealth, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.specAllHealthy()
+			return !c.specAllHealthy() && !c.needsReplace(true)
 		}).
 		PermitReentry(TrTimer, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.specAllHealthy()
+			return !c.specAllHealthy() && !c.needsReplace(true)
 		}).
 		Permit(TrHealth, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
@@ -253,20 +263,20 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 		}).
 		PermitReentry(TrHealth, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.needsReplace()
+			return !c.needsReplace(false)
 		}).
 		PermitReentry(TrCandidates).
 		PermitReentry(TrTimer, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.needsReplace()
+			return !c.needsReplace(false)
 		}).
 		Permit(TrHealth, StReconcile, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return c.needsReplace()
+			return c.needsReplace(false)
 		}).
 		Permit(TrTimer, StReconcile, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return c.needsReplace()
+			return c.needsReplace(false)
 		})
 
 	sm.Configure(StReconcile).
@@ -398,29 +408,33 @@ func (c *Controller) specAllHealthy() bool {
 	if len(c.spec.Members) == 0 {
 		return false
 	}
-	h := map[string]bool{}
-	for _, s := range c.health {
-		h[s.ID] = s.Healthy
-	}
+	h := c.healthMap(time.Now())
 	for _, id := range c.spec.Members {
-		if ok, exists := h[id]; !exists || !ok {
+		state, exists := h[id]
+		if !exists || !state.healthy {
 			return false
 		}
 	}
 	return true
 }
 
-func (c *Controller) needsReplace() bool {
+func (c *Controller) needsReplace(onlyFatal bool) bool {
 	if len(c.spec.Members) == 0 {
 		return false
 	}
-	h := map[string]bool{}
-	for _, s := range c.health {
-		h[s.ID] = s.Healthy
-	}
+	h := c.healthMap(time.Now())
 	failed := -1
 	for i, id := range c.spec.Members {
-		if ok, exists := h[id]; exists && !ok {
+		state, exists := h[id]
+		if !exists {
+			failed = i
+			break
+		}
+		if onlyFatal && state.fatal && !state.healthy {
+			failed = i
+			break
+		}
+		if !onlyFatal && !state.healthy {
 			failed = i
 			break
 		}
@@ -455,13 +469,11 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		return false
 	}
 
-	h := map[string]bool{}
-	for _, s := range c.health {
-		h[s.ID] = s.Healthy
-	}
+	h := c.healthMap(time.Now())
 	failedIdx := -1
 	for i, id := range c.spec.Members {
-		if ok, exists := h[id]; exists && !ok {
+		state, exists := h[id]
+		if !exists || !state.healthy {
 			failedIdx = i
 			break
 		}
@@ -530,6 +542,41 @@ func (c *Controller) shouldWipe(cr types.CandidateReport, desiredUUID string) bo
 		return true
 	}
 	return false
+}
+
+func (c *Controller) healthMap(now time.Time) map[string]healthState {
+	staleAfter := c.cfg.ElectionInterval * 3
+	if staleAfter <= 0 {
+		staleAfter = 15 * time.Second
+	}
+	h := map[string]healthState{}
+	for _, s := range c.health {
+		if s.ID == "" {
+			continue
+		}
+		state := healthState{healthy: s.Healthy}
+		// Mark stale reports as fatal/unhealthy
+		if s.UpdatedAt.IsZero() || now.Sub(s.UpdatedAt) > staleAfter {
+			state.healthy = false
+			state.fatal = true
+		}
+		// Fatal if agent reported exit/termination
+		reason := strings.ToLower(s.Reason)
+		if strings.Contains(reason, "exit") || strings.Contains(reason, "exited") || strings.Contains(reason, "terminated") || strings.Contains(reason, "shutdown") {
+			state.fatal = true
+		}
+		h[s.ID] = state
+	}
+	return h
+}
+
+type healthState struct {
+	healthy bool
+	fatal   bool
+}
+
+func yellowf(format string, args ...any) string {
+	return fmt.Sprintf("\x1b[33m"+format+"\x1b[0m", args...)
 }
 
 func (c *Controller) desiredReplicaSetUUID(eligible []types.CandidateReport) string {
