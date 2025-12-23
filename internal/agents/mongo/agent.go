@@ -130,8 +130,9 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	case orders.ActionReconfigure:
 		members, _ := ord.Payload["members"].([]any)
 		repl, _ := ord.Payload["replSetName"].(string)
-		log.Printf("[mongo-agent] received order action=%s epoch=%d members=%v replSet=%s", ord.Action, ord.Epoch, members, repl)
-		err = a.rsReconfig(ctx, repl, members)
+		force, _ := ord.Payload["force"].(bool)
+		log.Printf("[mongo-agent] received order action=%s epoch=%d members=%v replSet=%s force=%v", ord.Action, ord.Epoch, members, repl, force)
+		err = a.rsReconfigWithForce(ctx, repl, members, force)
 	}
 	if err != nil {
 		ack.Ok = false
@@ -204,6 +205,10 @@ func (a *Agent) rsInitiate(ctx context.Context, repl string, members []any) erro
 	return cli.Database("admin").RunCommand(ctx, cmd).Err()
 }
 func (a *Agent) rsReconfig(ctx context.Context, repl string, members []any) error {
+	return a.rsReconfigWithForce(ctx, repl, members, true)
+}
+
+func (a *Agent) rsReconfigWithForce(ctx context.Context, repl string, members []any, force bool) error {
 	repl = nz(repl, a.cfg.ReplSetName)
 	cfg := buildReplCfgDoc(repl, members, time.Now().Unix())
 	cli, err := a.mongoClient(ctx)
@@ -211,8 +216,8 @@ func (a *Agent) rsReconfig(ctx context.Context, repl string, members []any) erro
 		return err
 	}
 	defer cli.Disconnect(context.Background())
-	cmd := bson.D{{Key: "replSetReconfig", Value: cfg}, {Key: "force", Value: true}}
-	log.Printf("[mongo-agent] replSetReconfig config=%v", cfg)
+	cmd := bson.D{{Key: "replSetReconfig", Value: cfg}, {Key: "force", Value: force}}
+	log.Printf("[mongo-agent] replSetReconfig config=%v force=%v", cfg, force)
 	return cli.Database("admin").RunCommand(ctx, cmd).Err()
 }
 func buildReplCfgDoc(repl string, members []any, version int64) bson.M {

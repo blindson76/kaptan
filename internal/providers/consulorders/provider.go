@@ -34,6 +34,12 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	if p.MongoCandidatesPrefix == "" {
 		p.MongoCandidatesPrefix = "candidates/mongo"
 	}
+	if p.MongoLastAppliedKey == "" {
+		p.MongoLastAppliedKey = "provider/mongo/last_applied_spec"
+	}
+	var prev types.ReplicaSpec
+	prevExists, _ := p.KV.GetJSON(ctx, p.MongoLastAppliedKey, &prev)
+
 	candByID := map[string]types.CandidateReport{}
 	var cands []types.CandidateReport
 	if err := p.KV.ListJSON(ctx, p.MongoCandidatesPrefix, &cands); err == nil {
@@ -63,6 +69,13 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 		return out
 	}
 	hostMembers := buildHosts(spec.Members)
+
+	// Stop members that are no longer part of the spec.
+	_, removed := diffMembers(prev.Members, spec.Members)
+	for _, id := range removed {
+		_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStop, epoch, nil)
+	}
+
 	for _, id := range spec.Members {
 		if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
 			_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
@@ -74,10 +87,21 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 		}
 	}
 	if len(spec.Members) > 0 {
-		_ = p.issueAndWait(ctx, orders.KindMongo, spec.Members[0], orders.ActionInit, epoch, map[string]any{
+		target := spec.Members[0]
+		payload := map[string]any{
 			"members":     hostMembers,
 			"replSetName": spec.MongoReplicaSetID,
-		})
+		}
+		if !prevExists || len(prev.Members) == 0 {
+			_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload)
+		} else {
+			// Try gentle reconfig first, then force if it fails.
+			if err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload); err != nil {
+				log.Printf("[orders] reconfigure (non-force) failed: %v; retrying with force", err)
+				payload["force"] = true
+				_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload)
+			}
+		}
 	}
 	if p.MongoLastAppliedKey != "" {
 		_ = p.KV.PutJSON(ctx, p.MongoLastAppliedKey, &spec)
