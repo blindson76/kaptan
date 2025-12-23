@@ -3,7 +3,7 @@
 Single executable with config-driven task enablement (controllers use `instance_number` for identity):
 - Mongo controller (active/passive with Consul lock)
 - Kafka controller (active/passive with Consul lock)
-- Mongo worker (offline status probe on startup, reports to Consul)
+- Mongo agent (executes orders, registers service, and runs the offline candidate probe on startup)
 - Kafka worker (offline status probe on startup, reports to Consul)
 
 ## Build

@@ -28,13 +28,19 @@ tasks:
   mongo_agent:
     enabled: true
     agent_id: "${env.NODE_NAME}"
+    worker_id: "${env.NODE_NAME}"
     orders_key: "orders/mongo/${env.NODE_NAME}"
     ack_key: "acks/mongo/${env.NODE_NAME}"
+    report_key: "candidates/mongo/${env.NODE_NAME}"
     health_key: "health/mongo/${env.NODE_NAME}"
     mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
     mongosh_path: '${env.MONGO_TOOLS}/mongosh.exe'
     dbpath: '${env.MONGO_DB_PATH}'
     bind_ip: "${env.CSB_IP}"
+    bind_addr: "${env.MONGO_ADDR}"
+    temp_port: 27028                # local temporary port for offline probe
+    admin_user: "admin"
+    admin_pass: "123"
     port: 27017
     replset_name: "rs0"
     log_path: '${env.MONGO_LOG_PATH}'
@@ -43,18 +49,6 @@ tasks:
       address: "${env.CSB_IP}"
       ttl: "15s"
       tags: ["mongo"]
-
-  mongo_worker:
-    enabled: true
-    worker_id: "${env.NODE_NAME}"
-    report_key: "candidates/mongo/${env.NODE_NAME}"
-    bind_addr: "${env.MONGO_ADDR}"
-    # mongod offline probe options
-    mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
-    dbpath: '${env.MONGO_DB_PATH}'          # existing data dir
-    temp_port: 27028                # local temporary port for offline probe
-    admin_user: "admin"
-    admin_pass: "123"
 
   kafka_controller:
     enabled: false

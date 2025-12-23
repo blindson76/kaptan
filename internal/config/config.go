@@ -33,7 +33,6 @@ type TasksConfig struct {
 	ServicesController ServicesControllerConfig `yaml:"services_controller"`
 	ServicesAgent      ServicesAgentConfig      `yaml:"services_agent"`
 	MongoController    MongoControllerConfig    `yaml:"mongo_controller"`
-	MongoWorker        MongoWorkerConfig        `yaml:"mongo_worker"`
 	MongoAgent         MongoAgentConfig         `yaml:"mongo_agent"`
 	KafkaController    KafkaControllerConfig    `yaml:"kafka_controller"`
 	KafkaWorker        KafkaWorkerConfig        `yaml:"kafka_worker"`
@@ -68,20 +67,6 @@ type KafkaControllerConfig struct {
 	ElectionInterval          time.Duration `yaml:"election_interval"`
 	InitialSettleDuration     time.Duration `yaml:"initial_settle_duration"`
 	AllowDegradedSingleMember bool          `yaml:"allow_degraded_single_member"`
-}
-
-type MongoWorkerConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	WorkerID  string `yaml:"worker_id"`
-	ReportKey string `yaml:"report_key"`
-
-	MongodPath string `yaml:"mongod_path"`
-	DBPath     string `yaml:"dbpath"`
-	BindAddr   string `yaml:"bind_addr"`
-	TempPort   int    `yaml:"temp_port"`
-
-	AdminUser string `yaml:"admin_user"`
-	AdminPass string `yaml:"admin_pass"`
 }
 
 type KafkaWorkerConfig struct {
@@ -174,6 +159,9 @@ type MongoAgentConfig struct {
 	OrdersKey string `yaml:"orders_key"`
 	AckKey    string `yaml:"ack_key"`
 	HealthKey string `yaml:"health_key"`
+	ReportKey string `yaml:"report_key"`
+
+	WorkerID string `yaml:"worker_id"`
 
 	MongodPath  string `yaml:"mongod_path"`
 	MongoshPath string `yaml:"mongosh_path"`
@@ -182,6 +170,10 @@ type MongoAgentConfig struct {
 	Port        int    `yaml:"port"`
 	ReplSetName string `yaml:"replset_name"`
 	LogPath     string `yaml:"log_path"`
+	BindAddr    string `yaml:"bind_addr"`
+	TempPort    int    `yaml:"temp_port"`
+	AdminUser   string `yaml:"admin_user"`
+	AdminPass   string `yaml:"admin_pass"`
 
 	Service ServiceConfig `yaml:"service"`
 }

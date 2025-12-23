@@ -91,21 +91,6 @@ func main() {
 	}
 
 	// Workers run ONCE at startup, as required.
-	if cfg.Tasks.MongoWorker.Enabled {
-		w := mw.New(mw.Config{
-			WorkerID:   cfg.Tasks.MongoWorker.WorkerID,
-			ReportKey:  cfg.Tasks.MongoWorker.ReportKey,
-			MongodPath: cfg.Tasks.MongoWorker.MongodPath,
-			DBPath:     cfg.Tasks.MongoWorker.DBPath,
-			BindAddr:   cfg.Tasks.MongoWorker.BindAddr,
-			TempPort:   cfg.Tasks.MongoWorker.TempPort,
-			AdminUser:  cfg.Tasks.MongoWorker.AdminUser,
-			AdminPass:  cfg.Tasks.MongoWorker.AdminPass,
-			Host:       nodeName,
-			Addr:       cfg.Tasks.MongoWorker.BindAddr,
-		}, st)
-		runOnce(ctx, "mongo-worker", func() error { return w.RunOnce(ctx) })
-	}
 	if cfg.Tasks.KafkaWorker.Enabled {
 		w := kw.New(kw.Config{
 			WorkerID:       cfg.Tasks.KafkaWorker.WorkerID,
@@ -145,8 +130,17 @@ func main() {
 		if cfg.Tasks.MongoAgent.AgentID == "" {
 			cfg.Tasks.MongoAgent.AgentID = nodeName
 		}
+		if cfg.Tasks.MongoAgent.WorkerID == "" {
+			cfg.Tasks.MongoAgent.WorkerID = cfg.Tasks.MongoAgent.AgentID
+		}
 		if cfg.Tasks.MongoAgent.HealthKey == "" {
 			cfg.Tasks.MongoAgent.HealthKey = fmt.Sprintf("health/mongo/%s", cfg.Tasks.MongoAgent.AgentID)
+		}
+		if cfg.Tasks.MongoAgent.BindAddr == "" {
+			cfg.Tasks.MongoAgent.BindAddr = cfg.Tasks.MongoAgent.BindIP
+		}
+		if cfg.Tasks.MongoAgent.TempPort == 0 {
+			cfg.Tasks.MongoAgent.TempPort = 27028
 		}
 		log.Printf("starting mongo_agent...")
 		svc := servicereg.Registration{}
@@ -168,6 +162,21 @@ func main() {
 				CheckID: "check:mongo-" + cfg.Tasks.MongoAgent.AgentID,
 				TTL:     ttl,
 			}
+		}
+		if cfg.Tasks.MongoAgent.ReportKey != "" {
+			w := mw.New(mw.Config{
+				WorkerID:   cfg.Tasks.MongoAgent.WorkerID,
+				ReportKey:  cfg.Tasks.MongoAgent.ReportKey,
+				MongodPath: cfg.Tasks.MongoAgent.MongodPath,
+				DBPath:     cfg.Tasks.MongoAgent.DBPath,
+				BindAddr:   cfg.Tasks.MongoAgent.BindAddr,
+				TempPort:   cfg.Tasks.MongoAgent.TempPort,
+				AdminUser:  cfg.Tasks.MongoAgent.AdminUser,
+				AdminPass:  cfg.Tasks.MongoAgent.AdminPass,
+				Host:       nodeName,
+				Addr:       cfg.Tasks.MongoAgent.BindAddr,
+			}, st)
+			runOnce(ctx, "mongo-worker", func() error { return w.RunOnce(ctx) })
 		}
 		ag := mongoagent.New(mongoagent.Config{
 			AgentID:     cfg.Tasks.MongoAgent.AgentID,
