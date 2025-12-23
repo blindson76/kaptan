@@ -122,6 +122,12 @@ func main() {
 		if cfg.Tasks.MongoAgent.AgentID == "" {
 			cfg.Tasks.MongoAgent.AgentID = nodeName
 		}
+		if cfg.Tasks.MongoAgent.SpecKey == "" {
+			cfg.Tasks.MongoAgent.SpecKey = cfg.Tasks.MongoController.SpecKey
+		}
+		if cfg.Tasks.MongoAgent.SpecKey == "" {
+			cfg.Tasks.MongoAgent.SpecKey = "spec/mongo"
+		}
 		if cfg.Tasks.MongoAgent.WorkerID == "" {
 			cfg.Tasks.MongoAgent.WorkerID = cfg.Tasks.MongoAgent.AgentID
 		}
@@ -147,11 +153,9 @@ func main() {
 			}
 			svc = servicereg.Registration{
 				Name:    "mongo",
-				ID:      "mongo-" + cfg.Tasks.MongoAgent.AgentID,
 				Address: addr,
 				Port:    cfg.Tasks.MongoAgent.Port,
 				Tags:    cfg.Tasks.MongoAgent.Service.Tags,
-				CheckID: "check:mongo-" + cfg.Tasks.MongoAgent.AgentID,
 				TTL:     ttl,
 			}
 		}
@@ -181,6 +185,7 @@ func main() {
 			ReplSetName: cfg.Tasks.MongoAgent.ReplSetName,
 			LogPath:     cfg.Tasks.MongoAgent.LogPath,
 			HealthKey:   cfg.Tasks.MongoAgent.HealthKey,
+			SpecKey:     cfg.Tasks.MongoAgent.SpecKey,
 			Service:     svc,
 		}, st, reg)
 		go func() {

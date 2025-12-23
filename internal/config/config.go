@@ -148,6 +148,7 @@ type MongoAgentConfig struct {
 	AgentID   string `yaml:"agent_id"`
 	OrdersKey string `yaml:"orders_key"`
 	AckKey    string `yaml:"ack_key"`
+	SpecKey   string `yaml:"spec_key"`
 	HealthKey string `yaml:"health_key"`
 	ReportKey string `yaml:"report_key"`
 

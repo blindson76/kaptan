@@ -34,10 +34,12 @@ type CandidateReport struct {
 }
 
 type HealthStatus struct {
-	ID        string    `json:"id"`
-	Healthy   bool      `json:"healthy"`
-	Reason    string    `json:"reason,omitempty"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID          string            `json:"id"`
+	Healthy     bool              `json:"healthy"`
+	Reason      string            `json:"reason,omitempty"`
+	Note        string            `json:"note,omitempty"`
+	ServiceMeta map[string]string `json:"serviceMeta,omitempty"`
+	UpdatedAt   time.Time         `json:"updatedAt"`
 }
 
 type ReplicaSpec struct {

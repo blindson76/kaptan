@@ -27,6 +27,7 @@ type Config struct {
 	OrdersKey string
 	AckKey    string
 	HealthKey string
+	SpecKey   string
 
 	MongodPath  string
 	DBPath      string
@@ -42,10 +43,15 @@ type Agent struct {
 	cfg Config
 	kv  store.KV
 	reg servicereg.Registry
+
+	baseService   servicereg.Registration
+	activeService servicereg.Registration
+	activeSlot    int
+	regCancel     context.CancelFunc
 }
 
 func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
-	return &Agent{cfg: cfg, kv: kv, reg: reg}
+	return &Agent{cfg: cfg, kv: kv, reg: reg, baseService: cfg.Service}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -54,20 +60,22 @@ func (a *Agent) Run(ctx context.Context) error {
 	if a.reg != nil && a.cfg.Service.ID != "" {
 		log.Printf("[mongo-agent] service registration id=%s check=%s addr=%s port=%d", a.cfg.Service.ID, a.cfg.Service.CheckID, a.cfg.Service.Address, a.cfg.Service.Port)
 	}
-	if a.reg != nil && a.cfg.Service.ID != "" {
-		_ = a.reg.Register(ctx, a.cfg.Service)
-		defer a.reg.Deregister(context.Background(), a.cfg.Service.ID)
-		_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, "startup")
-		go a.roleHeartbeat(ctx)
-	}
 
 	ch := a.kv.WatchPrefixJSON(ctx, a.cfg.OrdersKey, func() any { return &[]orders.Order{} })
+	specKey := a.cfg.SpecKey
+	if specKey == "" {
+		specKey = "spec/mongo"
+	}
+	specCh := a.kv.WatchPrefixJSON(ctx, specKey, func() any { return &[]types.ReplicaSpec{} })
+
 	for {
 		select {
 		case <-ctx.Done():
+			a.stopServiceRegistration()
 			return ctx.Err()
 		case v, ok := <-ch:
 			if !ok {
+				a.stopServiceRegistration()
 				return nil
 			}
 			lst := v.([]orders.Order)
@@ -81,6 +89,17 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 			a.execute(ctx, ord)
+		case v, ok := <-specCh:
+			if !ok {
+				a.stopServiceRegistration()
+				return nil
+			}
+			specs := v.([]types.ReplicaSpec)
+			var spec types.ReplicaSpec
+			if len(specs) > 0 {
+				spec = specs[len(specs)-1]
+			}
+			a.updateServiceRegistration(ctx, spec)
 		}
 	}
 }
@@ -225,8 +244,62 @@ func (a *Agent) connectHost() string {
 	}
 }
 
+func (a *Agent) updateServiceRegistration(ctx context.Context, spec types.ReplicaSpec) {
+	if a.reg == nil || a.baseService.Name == "" {
+		return
+	}
+	member := false
+	slot := 0
+	for _, id := range spec.Members {
+		slot++
+		if id == a.cfg.AgentID {
+			member = true
+			break
+		}
+	}
+	if member {
+		newReg := a.baseService
+		if newReg.Name == "" {
+			newReg.Name = "mongo"
+		}
+		newReg.ID = fmt.Sprintf("%s-%d", newReg.Name, slot)
+		newReg.CheckID = fmt.Sprintf("check:%s-%d", newReg.Name, slot)
+		if a.activeService.ID == newReg.ID && a.activeSlot == slot {
+			return
+		}
+		a.stopServiceRegistration()
+		if err := a.reg.Register(ctx, newReg); err != nil {
+			log.Printf("[mongo-agent] service register failed: %v", err)
+			return
+		}
+		a.activeService = newReg
+		a.activeSlot = slot
+		ctxReg, cancel := context.WithCancel(ctx)
+		a.regCancel = cancel
+		_ = a.reg.SetTTL(ctxReg, newReg.CheckID, servicereg.StatusWarning, "startup")
+		go a.roleHeartbeat(ctxReg)
+		log.Printf("[mongo-agent] service registered (member of spec slot=%d) id=%s", slot, newReg.ID)
+		return
+	}
+	if !member {
+		a.stopServiceRegistration()
+	}
+}
+
+func (a *Agent) stopServiceRegistration() {
+	if a.regCancel != nil {
+		a.regCancel()
+		a.regCancel = nil
+	}
+	if a.activeService.ID != "" && a.reg != nil {
+		_ = a.reg.Deregister(context.Background(), a.activeService.ID)
+	}
+	a.activeService = servicereg.Registration{}
+	a.activeSlot = 0
+}
+
 func (a *Agent) roleHeartbeat(ctx context.Context) {
-	log.Printf("[mongo-agent] starting role heartbeat for service check_id=%s", a.cfg.Service.CheckID)
+	log.Printf("[mongo-agent] starting role heartbeat for service check_id=%s", a.activeService.CheckID)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -234,7 +307,7 @@ func (a *Agent) roleHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if a.reg == nil || a.cfg.Service.CheckID == "" {
+			if a.reg == nil || a.activeService.CheckID == "" {
 				continue
 			}
 			state, stateStr, rsid, optime, term, syncSource, ok, prog := a.probeReplStatus(ctx)
@@ -243,16 +316,16 @@ func (a *Agent) roleHeartbeat(ctx context.Context) {
 			// Map to Consul TTL status
 			switch state {
 			case 1, 2, 7: // PRIMARY, SECONDARY, ARBITER
-				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusPassing, note)
+				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusPassing, note)
 			case 5, 3, 0: // STARTUP2, RECOVERING, STARTUP
-				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, note)
+				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
 			case 9, 8, 6, 10: // ROLLBACK, DOWN, UNKNOWN, REMOVED
-				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusCritical, note)
+				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusCritical, note)
 			default:
 				if !ok {
-					_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, note)
+					_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
 				} else {
-					_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, note)
+					_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
 				}
 			}
 
@@ -262,11 +335,29 @@ func (a *Agent) roleHeartbeat(ctx context.Context) {
 			// Publish health to KV for controller consumption.
 			if a.cfg.HealthKey != "" {
 				healthy := ok && (state == 1 || state == 2 || state == 7) // PRIMARY/SECONDARY/ARBITER considered healthy
+				meta := map[string]string{}
+				if a.activeService.ID != "" {
+					meta["serviceId"] = a.activeService.ID
+				}
+				if a.activeService.CheckID != "" {
+					meta["checkId"] = a.activeService.CheckID
+				}
+				if a.activeService.Address != "" {
+					meta["address"] = a.activeService.Address
+				}
+				if a.activeService.Port > 0 {
+					meta["port"] = fmt.Sprintf("%d", a.activeService.Port)
+				}
+				if len(a.activeService.Tags) > 0 {
+					meta["tags"] = strings.Join(a.activeService.Tags, ",")
+				}
 				h := types.HealthStatus{
-					ID:        a.cfg.AgentID,
-					Healthy:   healthy,
-					Reason:    note,
-					UpdatedAt: time.Now(),
+					ID:          a.cfg.AgentID,
+					Healthy:     healthy,
+					Reason:      note,
+					Note:        note,
+					ServiceMeta: meta,
+					UpdatedAt:   time.Now(),
 				}
 				log.Printf("[mongo-agent] publishing health status healthy=%v reason=%s", h.Healthy, h.Reason)
 				if err := a.kv.PutJSON(ctx, a.cfg.HealthKey, &h); err != nil {
