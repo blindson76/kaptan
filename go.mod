@@ -6,6 +6,7 @@ require (
 	github.com/hashicorp/consul/api v1.29.2
 	github.com/qmuntal/stateless v1.7.2
 	go.mongodb.org/mongo-driver v1.15.0
+	golang.org/x/sys v0.19.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

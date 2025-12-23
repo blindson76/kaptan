@@ -8,6 +8,7 @@ import (
 
 	"github.com/qmuntal/stateless"
 	"github.com/umitbozkurt/consul-replctl/internal/fsm"
+	appRuntime "github.com/umitbozkurt/consul-replctl/internal/runtime"
 )
 
 // RunLeaderLoop tries to acquire lock; while leader, runs runActive(ctx).
@@ -29,6 +30,8 @@ func RunLeaderLoop(ctx context.Context, locker interface {
 			time.Sleep(2 * time.Second)
 			continue
 		}
+		appRuntime.FocusConsoleWindow()
+		appRuntime.SetConsoleLeaderTitle(fmt.Sprintf("%s leader", owner))
 		log.Printf("became leader for lock=%s owner=%s", lockKey, owner)
 
 		runCtx, cancel := context.WithCancel(ctx)
