@@ -90,19 +90,6 @@ func main() {
 		kafkaControllerID = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.KafkaController.InstanceNumber)
 	}
 
-	// Workers run ONCE at startup, as required.
-	if cfg.Tasks.KafkaWorker.Enabled {
-		w := kw.New(kw.Config{
-			WorkerID:       cfg.Tasks.KafkaWorker.WorkerID,
-			ReportKey:      cfg.Tasks.KafkaWorker.ReportKey,
-			MetaDirs:       cfg.Tasks.KafkaWorker.MetaDirs,
-			Host:           nodeName,
-			BrokerAddr:     cfg.Tasks.KafkaWorker.BrokerAddr,
-			ControllerAddr: cfg.Tasks.KafkaWorker.ControllerAddr,
-		}, st)
-		runOnce(ctx, "kafka-worker", func() error { return w.RunOnce(ctx) })
-	}
-
 	// Controllers are long-running but leader-elected.
 	if cfg.Tasks.MongoController.Enabled {
 		ctl := mctl.New(mctl.Config{
@@ -200,6 +187,23 @@ func main() {
 		}()
 	}
 	if cfg.Tasks.KafkaAgent.Enabled {
+		if cfg.Tasks.KafkaAgent.AgentID == "" {
+			cfg.Tasks.KafkaAgent.AgentID = nodeName
+		}
+		if cfg.Tasks.KafkaAgent.WorkerID == "" {
+			cfg.Tasks.KafkaAgent.WorkerID = cfg.Tasks.KafkaAgent.AgentID
+		}
+		if cfg.Tasks.KafkaAgent.ReportKey != "" {
+			w := kw.New(kw.Config{
+				WorkerID:       cfg.Tasks.KafkaAgent.WorkerID,
+				ReportKey:      cfg.Tasks.KafkaAgent.ReportKey,
+				MetaDirs:       cfg.Tasks.KafkaAgent.MetaDirs,
+				Host:           nodeName,
+				BrokerAddr:     cfg.Tasks.KafkaAgent.BrokerAddr,
+				ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
+			}, st)
+			runOnce(ctx, "kafka-worker", func() error { return w.RunOnce(ctx) })
+		}
 		svc := servicereg.Registration{}
 		if cfg.Tasks.KafkaAgent.Service.Enabled {
 			ttl := cfg.Tasks.KafkaAgent.Service.TTL

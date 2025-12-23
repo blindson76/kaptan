@@ -35,7 +35,6 @@ type TasksConfig struct {
 	MongoController    MongoControllerConfig    `yaml:"mongo_controller"`
 	MongoAgent         MongoAgentConfig         `yaml:"mongo_agent"`
 	KafkaController    KafkaControllerConfig    `yaml:"kafka_controller"`
-	KafkaWorker        KafkaWorkerConfig        `yaml:"kafka_worker"`
 	KafkaAgent         KafkaAgentConfig         `yaml:"kafka_agent"`
 }
 
@@ -67,16 +66,6 @@ type KafkaControllerConfig struct {
 	ElectionInterval          time.Duration `yaml:"election_interval"`
 	InitialSettleDuration     time.Duration `yaml:"initial_settle_duration"`
 	AllowDegradedSingleMember bool          `yaml:"allow_degraded_single_member"`
-}
-
-type KafkaWorkerConfig struct {
-	Enabled   bool     `yaml:"enabled"`
-	WorkerID  string   `yaml:"worker_id"`
-	ReportKey string   `yaml:"report_key"`
-	MetaDirs  []string `yaml:"meta_dirs"`
-
-	BrokerAddr     string `yaml:"broker_addr"`
-	ControllerAddr string `yaml:"controller_addr"`
 }
 
 func Load(path string) (*Config, error) {
@@ -183,6 +172,10 @@ type KafkaAgentConfig struct {
 	AgentID   string `yaml:"agent_id"`
 	OrdersKey string `yaml:"orders_key"`
 	AckKey    string `yaml:"ack_key"`
+
+	WorkerID  string   `yaml:"worker_id"`
+	ReportKey string   `yaml:"report_key"`
+	MetaDirs  []string `yaml:"meta_dirs"`
 
 	KafkaBinDir    string `yaml:"kafka_bin_dir"`
 	WorkDir        string `yaml:"work_dir"`

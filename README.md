@@ -4,7 +4,7 @@ Single executable with config-driven task enablement (controllers use `instance_
 - Mongo controller (active/passive with Consul lock)
 - Kafka controller (active/passive with Consul lock)
 - Mongo agent (executes orders, registers service, and runs the offline candidate probe on startup)
-- Kafka worker (offline status probe on startup, reports to Consul)
+- Kafka agent (executes orders, registers service, and runs the offline candidate probe on startup)
 
 ## Build
 ```bash

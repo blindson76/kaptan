@@ -63,21 +63,11 @@ tasks:
     initial_settle_duration: "15s"   # debounce window before choosing initial 3 members
     allow_degraded_single_member: true
 
-  kafka_worker:
-    enabled: false
-    worker_id: "${env.NODE_NAME}"
-    report_key: "candidates/kafka/${env.NODE_NAME}"
-    broker_addr: "${env.KAFKA_BROKER_ADDR}"        # e.g. 10.10.51.11:9092
-    controller_addr: "${env.KAFKA_CONTROLLER_ADDR}" # e.g. 10.10.51.11:9093
-    meta_dirs:
-      - "H:/infra/data/kafka/1/meta"
-      - "H:/infra/data/kafka/2/meta"
-
-
-
   kafka_agent:
     enabled: false
     agent_id: "${env.NODE_NAME}"
+    worker_id: "${env.NODE_NAME}"
+    report_key: "candidates/kafka/${env.NODE_NAME}"
     orders_key: "orders/kafka/${env.NODE_NAME}"
     ack_key: "acks/kafka/${env.NODE_NAME}"
     kafka_bin_dir: "H:/cots/kafka/bin/windows"
@@ -88,6 +78,9 @@ tasks:
     controller_addr: "${env.KAFKA_CONTROLLER_ADDR}"
     cluster_id: "${env.KAFKA_CLUSTER_ID}"
     node_id: "${env.KAFKA_NODE_ID}"
+    meta_dirs:
+      - "H:/infra/data/kafka/1/meta"
+      - "H:/infra/data/kafka/2/meta"
     service:
       enabled: true
       address: "${env.SVC_ADDR}"
