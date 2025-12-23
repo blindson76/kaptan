@@ -21,6 +21,7 @@ go build ./cmd/replctl
 - This project is a **framework**. The "replace member" action is intentionally abstracted behind Providers:
   - `internal/controllers/mongo/provider.go`
   - `internal/controllers/kafka/provider.go`
+- Set `consul.order_history_keep` to retain the last N issued orders per target under `orders_history/...` for debugging (0 disables history).
 - Worker probes are implemented and safe by default, but Mongo offline probe starts a local mongod process briefly; verify paths and permissions.
 
 

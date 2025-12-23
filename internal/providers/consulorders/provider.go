@@ -25,6 +25,8 @@ type Provider struct {
 
 	KafkaLastAppliedKey string
 	MongoLastAppliedKey string
+
+	OrderHistoryKeep int
 }
 
 func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) error {
@@ -208,8 +210,9 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 	} else {
 		op, ap = p.KafkaOrdersPrefix, p.KafkaAckPrefix
 	}
+	orderKey := fmt.Sprintf("%s/%s", op, target)
 	ord := orders.Order{Kind: kind, TargetID: target, Action: action, Payload: payload, IssuedAt: time.Now(), Epoch: epoch}
-	if err := p.KV.PutJSON(ctx, fmt.Sprintf("%s/%s", op, target), &ord); err != nil {
+	if err := orders.SaveWithHistory(ctx, p.KV, orderKey, ord, p.OrderHistoryKeep); err != nil {
 		return err
 	}
 	log.Printf("[orders] publish kind=%s target=%s action=%s epoch=%d payload=%v", kind, target, action, epoch, payload)

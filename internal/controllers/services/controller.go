@@ -28,6 +28,8 @@ type Config struct {
 
 	Services          []ServiceDef
 	ReconcileInterval time.Duration
+
+	OrderHistoryKeep int
 }
 
 type ServiceDef struct {
@@ -60,6 +62,9 @@ func New(cfg Config, kv store.KV, locker interface {
 	}
 	if cfg.MinPassing == 0 {
 		cfg.MinPassing = 3
+	}
+	if cfg.OrderHistoryKeep < 0 {
+		cfg.OrderHistoryKeep = 0
 	}
 	return &Controller{cfg: cfg, kv: kv, locker: locker, consul: consulCli}
 }
@@ -229,7 +234,8 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 					"ttl":     svc.TTL,
 				},
 			}
-			_ = c.kv.PutJSON(ctx, "orders/services/"+svc.Name+"/"+id, &ord)
+			orderKey := "orders/services/" + svc.Name + "/" + id
+			_ = orders.SaveWithHistory(ctx, c.kv, orderKey, ord, c.cfg.OrderHistoryKeep)
 		}
 	}
 }

@@ -5,6 +5,7 @@ consul:
   datacenter: ""
   token: "${env.CONSUL_HTTP_TOKEN}"
   prefix: "replctl/v1"
+  order_history_keep: 10
 
 tasks:
   mongo_controller:

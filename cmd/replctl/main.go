@@ -65,11 +65,14 @@ func main() {
 	reg := servicereg.NewConsulRegistry(rawCli)
 
 	orderProv := consulorders.Provider{
-		KV:                    st,
+		KV:               st,
+		OrderHistoryKeep: cfg.Consul.OrderHistoryKeep,
+
 		MongoOrdersPrefix:     "orders/mongo",
 		MongoAckPrefix:        "acks/mongo",
 		MongoCandidatesPrefix: "candidates/mongo",
 		MongoLastAppliedKey:   "provider/mongo/last_applied_spec",
+
 		KafkaOrdersPrefix:     "orders/kafka",
 		KafkaAckPrefix:        "acks/kafka",
 		KafkaCandidatesPrefix: "candidates/kafka",
@@ -322,6 +325,7 @@ func main() {
 			MinPassing:            cfg.Tasks.ServicesController.MinPassing,
 			Services:              svcDefs,
 			ReconcileInterval:     cfg.Tasks.ServicesController.ReconcileInterval,
+			OrderHistoryKeep:      cfg.Consul.OrderHistoryKeep,
 		}, st, locker, rawCli)
 		go func() {
 			log.Printf("%s services_controller started", logPrefix)

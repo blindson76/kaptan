@@ -23,6 +23,9 @@ type ConsulConfig struct {
 	Datacenter string `yaml:"datacenter"`
 	Token      string `yaml:"token"`
 	Prefix     string `yaml:"prefix"`
+
+	// Keep last N issued orders per target under orders_history/...
+	OrderHistoryKeep int `yaml:"order_history_keep"`
 }
 
 type TasksConfig struct {
@@ -78,6 +81,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Consul.Prefix == "" {
 		cfg.Consul.Prefix = "replctl/v1"
+	}
+	if cfg.Consul.OrderHistoryKeep < 0 {
+		cfg.Consul.OrderHistoryKeep = 0
 	}
 	if err := validate(&cfg); err != nil {
 		return nil, err
