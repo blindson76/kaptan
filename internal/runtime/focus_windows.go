@@ -32,7 +32,7 @@ func FocusConsoleWindow() {
 	// Restore in case it is minimized, then ask Windows to focus it.
 	_, _, _ = procShowWindow.Call(uintptr(hwnd), uintptr(swRestore))
 	if r, _, err := procSetForegroundWindow.Call(uintptr(hwnd)); r == 0 && err != nil {
-		log.Printf("failed to focus console window: %v", err)
+		log.Printf("%s failed to focus console window: %v", logPrefix, err)
 	}
 }
 
@@ -44,7 +44,7 @@ func SetConsoleLeaderTitle(suffix string) {
 		newTitle = cur + " [" + suffix + "]"
 	}
 	if r, _, err := procSetConsoleTitle.Call(uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(newTitle)))); r == 0 && err != nil {
-		log.Printf("failed to set console title: %v", err)
+		log.Printf("%s failed to set console title: %v", logPrefix, err)
 	}
 }
 

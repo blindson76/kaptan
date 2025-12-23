@@ -12,13 +12,15 @@ import (
 	capi "github.com/hashicorp/consul/api"
 )
 
+const logPrefix = "[runtime]"
+
 func WithSignals(parent context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(parent)
 	ch := make(chan os.Signal, 2)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-ch
-		log.Printf("signal received, shutting down")
+		log.Printf("%s signal received, shutting down", logPrefix)
 		cancel()
 		// second signal -> hard exit
 		select {

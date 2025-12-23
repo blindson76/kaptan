@@ -26,6 +26,8 @@ import (
 	mw "github.com/umitbozkurt/consul-replctl/internal/workers/mongo"
 )
 
+const logPrefix = "[main]"
+
 func main() {
 	var cfgPath string
 	flag.StringVar(&cfgPath, "config", "config.yaml", "path to config yaml")
@@ -53,11 +55,11 @@ func main() {
 		rawCfg.Token = cfg.Consul.Token
 	}
 	rawCli, _ := capi.NewClient(rawCfg)
-	log.Printf("waiting for consul to be ready...")
+	log.Printf("%s waiting for consul to be ready...", logPrefix)
 	if err := runtime.WaitConsulReady(ctx, rawCli, 2*time.Minute); err != nil {
-		log.Fatalf("consul not ready: %v", err)
+		log.Fatalf("%s consul not ready: %v", logPrefix, err)
 	}
-	log.Printf("consul is ready")
+	log.Printf("%s consul is ready", logPrefix)
 	locker := st.Locker()
 
 	reg := servicereg.NewConsulRegistry(rawCli)
@@ -105,9 +107,9 @@ func main() {
 			AllowDegradedSingleMember: cfg.Tasks.MongoController.AllowDegradedSingleMember,
 		}, st, locker, consulorders.MongoAdapter{P: orderProv})
 		go func() {
-			log.Printf("mongo controller started")
+			log.Printf("%s mongo controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
-				log.Printf("mongo controller stopped: %v", err)
+				log.Printf("%s mongo controller stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -129,7 +131,7 @@ func main() {
 		if cfg.Tasks.MongoAgent.TempPort == 0 {
 			cfg.Tasks.MongoAgent.TempPort = 27028
 		}
-		log.Printf("starting mongo_agent...")
+		log.Printf("%s starting mongo_agent...", logPrefix)
 		svc := servicereg.Registration{}
 		if cfg.Tasks.MongoAgent.Service.Enabled {
 			ttl := cfg.Tasks.MongoAgent.Service.TTL
@@ -180,9 +182,9 @@ func main() {
 			Service:     svc,
 		}, st, reg)
 		go func() {
-			log.Printf("mongo_agent started")
+			log.Printf("%s mongo_agent started", logPrefix)
 			if err := ag.Run(ctx); err != nil {
-				log.Printf("mongo_agent stopped: %v", err)
+				log.Printf("%s mongo_agent stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -245,9 +247,9 @@ func main() {
 			Service:        svc,
 		}, st, reg)
 		go func() {
-			log.Printf("kafka_agent started")
+			log.Printf("%s kafka_agent started", logPrefix)
 			if err := ag.Run(ctx); err != nil {
-				log.Printf("kafka_agent stopped: %v", err)
+				log.Printf("%s kafka_agent stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -265,9 +267,9 @@ func main() {
 			AllowDegradedSingleMember: cfg.Tasks.KafkaController.AllowDegradedSingleMember,
 		}, st, locker, consulorders.KafkaAdapter{P: orderProv})
 		go func() {
-			log.Printf("kafka controller started")
+			log.Printf("%s kafka controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
-				log.Printf("kafka controller stopped: %v", err)
+				log.Printf("%s kafka controller stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -285,9 +287,9 @@ func main() {
 			ServiceAddress: svcAddr,
 		}, st, reg)
 		go func() {
-			log.Printf("services_agent started")
+			log.Printf("%s services_agent started", logPrefix)
 			if err := ag.Run(ctx); err != nil {
-				log.Printf("services_agent stopped: %v", err)
+				log.Printf("%s services_agent stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -323,9 +325,9 @@ func main() {
 			ReconcileInterval:     cfg.Tasks.ServicesController.ReconcileInterval,
 		}, st, locker, rawCli)
 		go func() {
-			log.Printf("services_controller started")
+			log.Printf("%s services_controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
-				log.Printf("services_controller stopped: %v", err)
+				log.Printf("%s services_controller stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -336,8 +338,8 @@ func main() {
 
 func runOnce(ctx context.Context, name string, fn func() error) {
 	if err := fn(); err != nil {
-		log.Printf("%s runOnce error: %v", name, err)
+		log.Printf("%s %s runOnce error: %v", logPrefix, name, err)
 	} else {
-		log.Printf("%s runOnce ok", name)
+		log.Printf("%s %s runOnce ok", logPrefix, name)
 	}
 }

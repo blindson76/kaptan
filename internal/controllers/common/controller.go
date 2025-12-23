@@ -11,6 +11,8 @@ import (
 	appRuntime "github.com/umitbozkurt/consul-replctl/internal/runtime"
 )
 
+const logPrefix = "[controller-common]"
+
 // RunLeaderLoop tries to acquire lock; while leader, runs runActive(ctx).
 // If leadership lost (ctx cancel or runActive returns), it retries.
 func RunLeaderLoop(ctx context.Context, locker interface {
@@ -26,20 +28,20 @@ func RunLeaderLoop(ctx context.Context, locker interface {
 
 		release, err := locker.Acquire(ctx, lockKey, owner)
 		if err != nil {
-			log.Printf("leader lock acquire failed: %v", err)
+			log.Printf("%s leader lock acquire failed: %v", logPrefix, err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
 		appRuntime.FocusConsoleWindow()
 		appRuntime.SetConsoleLeaderTitle(fmt.Sprintf("%s leader", owner))
-		log.Printf("became leader for lock=%s owner=%s", lockKey, owner)
+		log.Printf("%s became leader for lock=%s owner=%s", logPrefix, lockKey, owner)
 
 		runCtx, cancel := context.WithCancel(ctx)
 		err = runActive(runCtx)
 		cancel()
 
 		_ = release()
-		log.Printf("released leader lock=%s owner=%s err=%v", lockKey, owner, err)
+		log.Printf("%s released leader lock=%s owner=%s err=%v", logPrefix, lockKey, owner, err)
 
 		// backoff to prevent hot loop
 		time.Sleep(1 * time.Second)
@@ -51,7 +53,7 @@ func RunLeaderLoop(ctx context.Context, locker interface {
 func BuildExternalStorage(ctx context.Context, p *fsm.PersistedState) (get func(context.Context) (stateless.State, error), set func(context.Context, stateless.State) error) {
 	// Load once at start.
 	if _, err := p.Load(ctx); err != nil {
-		log.Printf("state load error: %v", err)
+		log.Printf("%s state load error: %v", logPrefix, err)
 	}
 	get = func(context.Context) (stateless.State, error) { return stateless.State(p.Get()), nil }
 	set = func(c context.Context, s stateless.State) error {
@@ -60,7 +62,7 @@ func BuildExternalStorage(ctx context.Context, p *fsm.PersistedState) (get func(
 			stateStr = fmt.Sprint(s)
 		}
 		if err := p.Save(c, stateStr); err != nil {
-			log.Printf("state save error: %v", err)
+			log.Printf("%s state save error: %v", logPrefix, err)
 			return err
 		}
 		return nil
