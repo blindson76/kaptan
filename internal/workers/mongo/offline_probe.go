@@ -141,7 +141,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	}
 
 	// remove replset config document (best-effort) to allow standalone start later
-	_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
+	//_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
 
 	_ = stopProcess(cmd, done)
 	return replSetID, replSetUUID, term, lastOplog, nil

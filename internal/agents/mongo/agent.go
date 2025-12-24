@@ -201,6 +201,13 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 	a.mongodMu.Unlock()
 	log.Printf("[mongo-agent] started mongod pid=%d", cmd.Process.Pid)
 	go a.watchMongod(ctx, cmd)
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	log.Printf("[mongo-agent] waiting for mongod to accept connections on %s:%d", a.connectHost(), nzInt(a.cfg.Port, 27017))
+	if err := a.waitMongodReady(waitCtx); err != nil {
+		return fmt.Errorf("mongod did not become ready: %w", err)
+	}
+	log.Printf("[mongo-agent] mongod is ready")
 	return nil
 }
 
@@ -216,6 +223,35 @@ func (a *Agent) mongoClient(ctx context.Context) (*mongo.Client, error) {
 		})
 	}
 	return mongo.Connect(ctx, opts)
+}
+
+func (a *Agent) waitMongodReady(ctx context.Context) error {
+	host := a.connectHost()
+	uri := fmt.Sprintf("mongodb://%s:%d/?directConnection=true", host, nzInt(a.cfg.Port, 27017))
+	opts := options.Client().ApplyURI(uri).SetServerSelectionTimeout(2 * time.Second)
+	if a.cfg.AdminUser != "" {
+		opts.SetAuth(options.Credential{
+			Username:   a.cfg.AdminUser,
+			Password:   a.cfg.AdminPass,
+			AuthSource: "admin",
+		})
+	}
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		cli, err := mongo.Connect(ctx, opts)
+		if err == nil {
+			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			err = cli.Database("admin").RunCommand(pingCtx, bson.D{{Key: "ping", Value: 1}}).Err()
+			cancel()
+			_ = cli.Disconnect(context.Background())
+		}
+		if err == nil {
+			return nil
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
 }
 
 func (a *Agent) shutdown(ctx context.Context) error {

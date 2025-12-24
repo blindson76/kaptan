@@ -41,6 +41,7 @@ func WaitConsulReady(ctx context.Context, cli *capi.Client, timeout time.Duratio
 			return ctx.Err()
 		}
 		if leader, err := cli.Status().Leader(); err == nil && leader != "" {
+			time.Sleep(3 * time.Second)
 			return nil
 		} else {
 			lastErr = err
