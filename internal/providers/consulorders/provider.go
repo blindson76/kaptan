@@ -110,16 +110,37 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 		}
 		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig
 		shouldReconfig := !shouldInit
+		reconfigReasons := []string{}
 		if prevExists && len(prev.Members) > 0 {
 			sameMembers := reflect.DeepEqual(prev.Members, spec.Members)
 			sameSetID := prev.MongoReplicaSetID == spec.MongoReplicaSetID
 			sameUUID := strings.EqualFold(prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID)
 			shouldReconfig = !(sameMembers && sameSetID && sameUUID)
+			if shouldReconfig {
+				if !sameMembers {
+					reconfigReasons = append(reconfigReasons, fmt.Sprintf("members changed (prev=%v new=%v)", prev.Members, spec.Members))
+				}
+				if !sameSetID {
+					reconfigReasons = append(reconfigReasons, fmt.Sprintf("replicaSetID changed (prev=%q new=%q)", prev.MongoReplicaSetID, spec.MongoReplicaSetID))
+				}
+				if !sameUUID {
+					reconfigReasons = append(reconfigReasons, fmt.Sprintf("replicaSetUUID changed (prev=%q new=%q)", prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID))
+				}
+			}
+		} else if shouldReconfig {
+			reconfigReasons = append(reconfigReasons, "previous spec missing/empty")
+			if hasReplicaConfig {
+				reconfigReasons = append(reconfigReasons, "existing replica config detected")
+			}
 		}
 
 		if shouldInit {
 			_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload)
 		} else if shouldReconfig {
+			if len(reconfigReasons) == 0 {
+				reconfigReasons = append(reconfigReasons, "spec change detected")
+			}
+			log.Printf("[orders] mongo reconfigure reason=%s", strings.Join(reconfigReasons, ", "))
 			// Try gentle reconfig first, then force if it fails.
 			if err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload); err != nil {
 				log.Printf("[orders] reconfigure (non-force) failed: %v; retrying with force", err)

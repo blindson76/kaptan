@@ -21,6 +21,7 @@ import (
 	"github.com/umitbozkurt/consul-replctl/internal/servicereg"
 	"github.com/umitbozkurt/consul-replctl/internal/store"
 	"github.com/umitbozkurt/consul-replctl/internal/types"
+	mw "github.com/umitbozkurt/consul-replctl/internal/workers/mongo"
 )
 
 type Config struct {
@@ -33,7 +34,9 @@ type Config struct {
 	MongodPath  string
 	DBPath      string
 	BindIP      string
+	BindAddr    string
 	Port        int
+	TempPort    int
 	ReplSetName string
 	LogPath     string
 
@@ -121,6 +124,11 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	case orders.ActionWipe:
 		log.Printf("[mongo-agent] action wipe dbpath=%s epoch=%d", a.cfg.DBPath, ord.Epoch)
 		err = wipeDir(a.cfg.DBPath)
+		if err == nil {
+			if err2 := a.recreateAdminUser(ctx); err2 != nil {
+				err = err2
+			}
+		}
 	case orders.ActionStart:
 		repl := a.cfg.ReplSetName
 		if v, ok := ord.Payload["replSetName"].(string); ok && v != "" {
@@ -166,6 +174,35 @@ func wipeDir(dir string) error {
 	return nil
 }
 
+func (a *Agent) recreateAdminUser(ctx context.Context) error {
+	if a.cfg.AdminUser == "" || a.cfg.AdminPass == "" {
+		return nil
+	}
+	if a.cfg.MongodPath == "" || a.cfg.DBPath == "" {
+		return fmt.Errorf("mongod_path and dbpath required to recreate admin user")
+	}
+	bind := strings.TrimSpace(a.cfg.BindAddr)
+	if bind == "" {
+		bind = "127.0.0.1"
+	}
+	port := a.cfg.TempPort
+	if port == 0 {
+		port = 27028
+	}
+	log.Printf("[mongo-agent] recreating admin user after wipe (bind=%s port=%d)", bind, port)
+	probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	_, _, _, _, err := mw.Probe(probeCtx, mw.OfflineProbeConfig{
+		MongodPath: a.cfg.MongodPath,
+		DBPath:     a.cfg.DBPath,
+		Bind:       bind,
+		Port:       port,
+		AdminUser:  a.cfg.AdminUser,
+		AdminPass:  a.cfg.AdminPass,
+	})
+	return err
+}
+
 func (a *Agent) startMongod(ctx context.Context, repl string) error {
 	keyFilePath, err := a.ensureKeyFile()
 	if err != nil {
@@ -201,7 +238,7 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 	a.mongodMu.Unlock()
 	log.Printf("[mongo-agent] started mongod pid=%d", cmd.Process.Pid)
 	go a.watchMongod(ctx, cmd)
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	log.Printf("[mongo-agent] waiting for mongod to accept connections on %s:%d", a.connectHost(), nzInt(a.cfg.Port, 27017))
 	if err := a.waitMongodReady(waitCtx); err != nil {
