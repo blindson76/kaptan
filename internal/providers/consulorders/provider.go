@@ -63,14 +63,7 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 	healthByID := map[string]types.HealthStatus{}
 	if p.MongoHealthPrefix != "" {
-		var health []types.HealthStatus
-		if err := p.KV.ListJSON(ctx, p.MongoHealthPrefix, &health); err == nil {
-			for _, h := range health {
-				if h.ID != "" {
-					healthByID[h.ID] = h
-				}
-			}
-		}
+		healthByID = loadHealthByID(ctx, p.KV, p.MongoHealthPrefix)
 	}
 	buildMembers := func(ids []string) []any {
 		out := make([]any, 0, len(ids))
@@ -120,13 +113,18 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	if err := runParallel(ctx, startTasks); err != nil {
 		return err
 	}
+
+	if p.MongoHealthPrefix != "" {
+		healthByID = loadHealthByID(ctx, p.KV, p.MongoHealthPrefix)
+	}
 	if len(spec.Members) > 0 {
 		payload := map[string]any{
 			"members":     replMembers,
 			"replSetName": spec.MongoReplicaSetID,
 		}
 		hasHealthyReplica := hasHealthyReplicaMember(healthByID)
-		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig && !hasHealthyReplica
+		hasHealthReplicaConfig := hasReplicaConfigFromHealth(healthByID, spec.Members)
+		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig && !hasHealthyReplica && !hasHealthReplicaConfig
 		shouldReconfig := !shouldInit
 		reconfigReasons := []string{}
 		if prevExists && len(prev.Members) > 0 {
@@ -152,6 +150,9 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			}
 			if hasHealthyReplica {
 				reconfigReasons = append(reconfigReasons, "healthy replica member detected")
+			}
+			if hasHealthReplicaConfig {
+				reconfigReasons = append(reconfigReasons, "health reports replica config")
 			}
 		}
 
@@ -426,6 +427,22 @@ func (p Provider) issueReconfigTargets(ctx context.Context, targets []string, ep
 	return lastErr
 }
 
+func loadHealthByID(ctx context.Context, kv store.KV, prefix string) map[string]types.HealthStatus {
+	healthByID := map[string]types.HealthStatus{}
+	if prefix == "" || kv == nil {
+		return healthByID
+	}
+	var health []types.HealthStatus
+	if err := kv.ListJSON(ctx, prefix, &health); err == nil {
+		for _, h := range health {
+			if h.ID != "" {
+				healthByID[h.ID] = h
+			}
+		}
+	}
+	return healthByID
+}
+
 func mergeMembers(primary []string, extra []string) []string {
 	out := make([]string, 0, len(primary)+len(extra))
 	seen := map[string]bool{}
@@ -529,33 +546,70 @@ func hasHealthyReplicaMember(healthByID map[string]types.HealthStatus) bool {
 	return false
 }
 
+func hasReplicaConfigFromHealth(healthByID map[string]types.HealthStatus, members []string) bool {
+	if len(healthByID) == 0 || len(members) == 0 {
+		return false
+	}
+	memberSet := map[string]bool{}
+	for _, id := range members {
+		if id != "" {
+			memberSet[id] = true
+		}
+	}
+	for id, h := range healthByID {
+		if !memberSet[id] {
+			continue
+		}
+		_, _, rsid, ok := parseMongoNote(h.Reason)
+		if ok && rsid != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func parseMongoState(reason string) (int, string, bool) {
+	state, stateStr, _, ok := parseMongoNote(reason)
+	return state, stateStr, ok
+}
+
+func parseMongoNote(reason string) (int, string, string, bool) {
 	if reason == "" {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	var note struct {
 		Mongo struct {
-			State    int    `json:"state"`
-			StateStr string `json:"stateStr"`
+			State         int    `json:"state"`
+			StateStr      string `json:"stateStr"`
+			ReplicaSetID  string `json:"replicaSetId"`
+			ReplicaSetID2 string `json:"replicaSetID"`
+			ReplicaSetID3 string `json:"replicasetid"`
 		} `json:"mongo"`
 	}
 	if err := json.Unmarshal([]byte(reason), &note); err == nil {
-		if note.Mongo.State != 0 || note.Mongo.StateStr != "" {
-			return note.Mongo.State, note.Mongo.StateStr, true
+		rsid := note.Mongo.ReplicaSetID
+		if rsid == "" {
+			rsid = note.Mongo.ReplicaSetID2
+		}
+		if rsid == "" {
+			rsid = note.Mongo.ReplicaSetID3
+		}
+		if note.Mongo.State != 0 || note.Mongo.StateStr != "" || rsid != "" {
+			return note.Mongo.State, note.Mongo.StateStr, rsid, true
 		}
 	}
 	upper := strings.ToUpper(reason)
 	switch {
 	case strings.Contains(upper, "PRIMARY"):
-		return 1, "PRIMARY", true
+		return 1, "PRIMARY", "", true
 	case strings.Contains(upper, "SECONDARY"):
-		return 2, "SECONDARY", true
+		return 2, "SECONDARY", "", true
 	case strings.Contains(upper, "ARBITER"):
-		return 7, "ARBITER", true
+		return 7, "ARBITER", "", true
 	case strings.Contains(upper, "REMOVED"):
-		return 10, "REMOVED", true
+		return 10, "REMOVED", "", true
 	}
-	return 0, "", false
+	return 0, "", "", false
 }
 
 func isNotWritablePrimary(err error) bool {
