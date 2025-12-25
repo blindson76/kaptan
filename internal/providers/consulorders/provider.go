@@ -125,7 +125,8 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			"members":     replMembers,
 			"replSetName": spec.MongoReplicaSetID,
 		}
-		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig
+		hasHealthyReplica := hasHealthyReplicaMember(healthByID)
+		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig && !hasHealthyReplica
 		shouldReconfig := !shouldInit
 		reconfigReasons := []string{}
 		if prevExists && len(prev.Members) > 0 {
@@ -148,6 +149,9 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			reconfigReasons = append(reconfigReasons, "previous spec missing/empty")
 			if hasReplicaConfig {
 				reconfigReasons = append(reconfigReasons, "existing replica config detected")
+			}
+			if hasHealthyReplica {
+				reconfigReasons = append(reconfigReasons, "healthy replica member detected")
 			}
 		}
 
@@ -504,6 +508,25 @@ func isMongoPrimary(reason string) bool {
 		return true
 	}
 	return strings.EqualFold(stateStr, "PRIMARY")
+}
+
+func hasHealthyReplicaMember(healthByID map[string]types.HealthStatus) bool {
+	for _, h := range healthByID {
+		if !h.Healthy {
+			continue
+		}
+		state, stateStr, ok := parseMongoState(h.Reason)
+		if !ok {
+			continue
+		}
+		if state == 1 || state == 2 || state == 7 {
+			return true
+		}
+		if strings.EqualFold(stateStr, "PRIMARY") || strings.EqualFold(stateStr, "SECONDARY") || strings.EqualFold(stateStr, "ARBITER") {
+			return true
+		}
+	}
+	return false
 }
 
 func parseMongoState(reason string) (int, string, bool) {
