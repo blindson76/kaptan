@@ -178,14 +178,11 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 
 	// Stop members that are no longer part of the spec after config changes.
-	stopTasks := make([]orderTask, 0, len(removed))
 	for _, id := range removed {
-		id := id
-		stopTasks = append(stopTasks, func(ctx context.Context) error {
-			return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStop, epoch, nil)
-		})
+		if err := p.issue(ctx, orders.KindMongo, id, orders.ActionStop, epoch, nil); err != nil {
+			log.Printf("[orders] stop issue failed kind=%s target=%s action=%s epoch=%d err=%v", orders.KindMongo, id, orders.ActionStop, epoch, err)
+		}
 	}
-	runParallelBestEffort(ctx, stopTasks)
 
 	if p.MongoLastAppliedKey != "" {
 		_ = p.KV.PutJSON(ctx, p.MongoLastAppliedKey, &spec)
@@ -358,18 +355,15 @@ func runParallelBestEffort(ctx context.Context, tasks []orderTask) {
 }
 
 func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target string, action orders.Action, epoch int64, payload map[string]any) error {
-	var op, ap string
+	var ap string
 	if kind == orders.KindMongo {
-		op, ap = p.MongoOrdersPrefix, p.MongoAckPrefix
+		ap = p.MongoAckPrefix
 	} else {
-		op, ap = p.KafkaOrdersPrefix, p.KafkaAckPrefix
+		ap = p.KafkaAckPrefix
 	}
-	orderKey := fmt.Sprintf("%s/%s", op, target)
-	ord := orders.Order{Kind: kind, TargetID: target, Action: action, Payload: payload, IssuedAt: time.Now(), Epoch: epoch}
-	if err := orders.SaveWithHistory(ctx, p.KV, orderKey, ord, p.OrderHistoryKeep); err != nil {
+	if err := p.issue(ctx, kind, target, action, epoch, payload); err != nil {
 		return err
 	}
-	log.Printf("[orders] publish kind=%s target=%s action=%s epoch=%d payload=%v", kind, target, action, epoch, payload)
 
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
@@ -389,6 +383,22 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 		}
 	}
 	log.Printf("[orders] ack timeout kind=%s target=%s action=%s epoch=%d", kind, target, action, epoch)
+	return nil
+}
+
+func (p Provider) issue(ctx context.Context, kind orders.Kind, target string, action orders.Action, epoch int64, payload map[string]any) error {
+	var op string
+	if kind == orders.KindMongo {
+		op = p.MongoOrdersPrefix
+	} else {
+		op = p.KafkaOrdersPrefix
+	}
+	orderKey := fmt.Sprintf("%s/%s", op, target)
+	ord := orders.Order{Kind: kind, TargetID: target, Action: action, Payload: payload, IssuedAt: time.Now(), Epoch: epoch}
+	if err := orders.SaveWithHistory(ctx, p.KV, orderKey, ord, p.OrderHistoryKeep); err != nil {
+		return err
+	}
+	log.Printf("[orders] publish kind=%s target=%s action=%s epoch=%d payload=%v", kind, target, action, epoch, payload)
 	return nil
 }
 
