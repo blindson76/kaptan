@@ -53,6 +53,9 @@ func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	log.Printf("[kafka-agent] starting agent_id=%s orders_key=%s ack_key=%s bin_dir=%s work_dir=%s broker_addr=%s controller_addr=%s",
+		a.cfg.AgentID, a.cfg.OrdersKey, a.cfg.AckKey, a.cfg.KafkaBinDir, a.cfg.WorkDir, a.cfg.BrokerAddr, a.cfg.ControllerAddr)
+
 	if a.reg != nil && a.cfg.Service.ID != "" {
 		_ = a.reg.Register(ctx, a.cfg.Service)
 		defer a.reg.Deregister(context.Background(), a.cfg.Service.ID)
@@ -83,6 +86,8 @@ func (a *Agent) Run(ctx context.Context) error {
 }
 
 func (a *Agent) execute(ctx context.Context, ord orders.Order) {
+	log.Printf("[kafka-agent] received order action=%s epoch=%d payload=%v", ord.Action, ord.Epoch, ord.Payload)
+
 	ack := orders.Ack{TargetID: a.cfg.AgentID, Action: ord.Action, Epoch: ord.Epoch, FinishedAt: time.Now()}
 	var err error
 	switch ord.Action {
@@ -113,8 +118,10 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	if err != nil {
 		ack.Ok = false
 		ack.Message = err.Error()
+		log.Printf("[kafka-agent] action=%s epoch=%d failed: %v", ord.Action, ord.Epoch, err)
 	} else {
 		ack.Ok = true
+		log.Printf("[kafka-agent] action=%s epoch=%d ok", ord.Action, ord.Epoch)
 	}
 	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
 }
@@ -131,13 +138,16 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string) e
 
 	if a.cfg.ClusterID != "" {
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
-		cmd := exec.CommandContext(ctx, fmtCmd, "format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath, "--no-initial-controllers")
+		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath, "--no-initial-controllers"}
+		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
+		cmd := exec.CommandContext(ctx, fmtCmd, args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		_ = cmd.Run()
 	}
 
 	startCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-server-start.bat")
+	log.Printf("[kafka-agent] start %s %s", startCmd, propsPath)
 	cmd := exec.CommandContext(ctx, startCmd, propsPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -202,12 +212,19 @@ func waitTCP(addr string, timeout time.Duration) error {
 func (a *Agent) waitQuorumReady(ctx context.Context, bootstrapServer string, timeout time.Duration) error {
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
 	dl := time.Now().Add(timeout)
+	attempt := 0
 	for time.Now().Before(dl) {
-		cmd := exec.CommandContext(ctx, tool, "--bootstrap-server", bootstrapServer, "describe", "--status")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err == nil {
+		args := []string{"--bootstrap-server", bootstrapServer, "describe", "--status"}
+		log.Printf("[kafka-agent] exec %s %s (attempt=%d)", tool, strings.Join(args, " "), attempt)
+		attempt++
+		cmd := exec.CommandContext(ctx, tool, args...)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
 			return nil
+		}
+		low := strings.ToLower(string(out))
+		if strings.Contains(low, "not init") {
+			return fmt.Errorf("metadata quorum unavailable (bootstrap=%s): cluster not initialized", bootstrapServer)
 		}
 		select {
 		case <-ctx.Done():
@@ -226,7 +243,9 @@ func (a *Agent) addVoter(ctx context.Context, bootstrapServer, voterID, voterEnd
 		return err
 	}
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	cmd := exec.CommandContext(ctx, tool, "--bootstrap-server", bootstrapServer, "add-voter", "--voter-id", voterID, "--voter-endpoint", voterEndpoint)
+	args := []string{"--bootstrap-server", bootstrapServer, "add-voter", "--voter-id", voterID, "--voter-endpoint", voterEndpoint}
+	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -234,7 +253,9 @@ func (a *Agent) addVoter(ctx context.Context, bootstrapServer, voterID, voterEnd
 
 func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, voterID string) error {
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	cmd := exec.CommandContext(ctx, tool, "--bootstrap-server", bootstrapServer, "remove-voter", "--voter-id", voterID)
+	args := []string{"--bootstrap-server", bootstrapServer, "remove-voter", "--voter-id", voterID}
+	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -250,7 +271,9 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	reassignTool := filepath.Join(a.cfg.KafkaBinDir, "kafka-reassign-partitions.bat")
 
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "list_topics", "done": false, "updatedAt": time.Now().Format(time.RFC3339)})
-	out, err := exec.CommandContext(ctx, topicsTool, "--bootstrap-server", bootstrapServer, "--list").Output()
+	listArgs := []string{"--bootstrap-server", bootstrapServer, "--list"}
+	log.Printf("[kafka-agent] exec %s %s", topicsTool, strings.Join(listArgs, " "))
+	out, err := exec.CommandContext(ctx, topicsTool, listArgs...).Output()
 	if err != nil {
 		return err
 	}
@@ -282,7 +305,9 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 		brokerList = "1,2,3"
 	}
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "generate_plan", "done": false, "topics": len(topics), "updatedAt": time.Now().Format(time.RFC3339)})
-	genCmd := exec.CommandContext(ctx, reassignTool, "--bootstrap-server", bootstrapServer, "--broker-list", brokerList, "--topics-to-move-json-file", topicsPath, "--generate")
+	genArgs := []string{"--bootstrap-server", bootstrapServer, "--broker-list", brokerList, "--topics-to-move-json-file", topicsPath, "--generate"}
+	log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(genArgs, " "))
+	genCmd := exec.CommandContext(ctx, reassignTool, genArgs...)
 	genOut, genErr := genCmd.CombinedOutput()
 	if genErr != nil {
 		return fmt.Errorf("generate failed: %v\n%s", genErr, string(genOut))
@@ -295,7 +320,9 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	_ = os.WriteFile(planPath, []byte(plan), 0o644)
 
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "execute", "done": false, "updatedAt": time.Now().Format(time.RFC3339)})
-	execCmd := exec.CommandContext(ctx, reassignTool, "--bootstrap-server", bootstrapServer, "--reassignment-json-file", planPath, "--execute")
+	execArgs := []string{"--bootstrap-server", bootstrapServer, "--reassignment-json-file", planPath, "--execute"}
+	log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(execArgs, " "))
+	execCmd := exec.CommandContext(ctx, reassignTool, execArgs...)
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
 	if err := execCmd.Run(); err != nil {
@@ -304,7 +331,9 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "verify", "done": false, "updatedAt": time.Now().Format(time.RFC3339)})
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		verCmd := exec.CommandContext(ctx, reassignTool, "--bootstrap-server", bootstrapServer, "--reassignment-json-file", planPath, "--verify")
+		verArgs := []string{"--bootstrap-server", bootstrapServer, "--reassignment-json-file", planPath, "--verify"}
+		log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(verArgs, " "))
+		verCmd := exec.CommandContext(ctx, reassignTool, verArgs...)
 		out, _ := verCmd.CombinedOutput()
 		msg := strings.TrimSpace(string(out))
 		if len(msg) > 280 {

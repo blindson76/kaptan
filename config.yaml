@@ -1,123 +1,121 @@
-node_name: "${env.NODE_NAME}"
+node_name: '${env.NODE_NAME}'
 
 consul:
-  address: "${env.CONSUL_HTTP_ADDR}"
-  datacenter: ""
-  token: "${env.CONSUL_HTTP_TOKEN}"
-  prefix: "replctl/v1"
+  address: '${env.CONSUL_HTTP_ADDR}'
+  datacenter: ''
+  token: '${env.CONSUL_HTTP_TOKEN}'
+  prefix: 'replctl/v1'
   order_history_keep: 10
 
 tasks:
   mongo_controller:
-    enabled: true
+    enabled: false
     instance_number: 1                 # set 1 on one node, 2 on another (standby), etc.
-    controller_id: ""                   # optional; if empty -> NODE_NAME + #instance_number
-    lock_key: "locks/mongo-controller"
-    state_key: "state/mongo-controller"
-    candidates_prefix: "candidates/mongo"
-    health_prefix: "health/mongo"
-    spec_key: "spec/mongo"
-    replica_set_id: "rs0"             # desired replica set name (_id in local.system.replset)
-    election_interval: "10s"
-    initial_settle_duration: "3s"   # debounce window before choosing initial 3 members
+    controller_id: ''                   # optional; if empty -> NODE_NAME + #instance_number
+    lock_key: 'locks/mongo-controller'
+    state_key: 'state/mongo-controller'
+    candidates_prefix: 'candidates/mongo'
+    health_prefix: 'health/mongo'
+    spec_key: 'spec/mongo'
+    replica_set_id: 'rs0'             # desired replica set name (_id in local.system.replset)
+    election_interval: '10s'
+    initial_settle_duration: '3s'   # debounce window before choosing initial 3 members
     allow_degraded_single_member: false
 
   mongo_agent:
-    enabled: true
-    agent_id: "${env.NODE_NAME}"
-    worker_id: "${env.NODE_NAME}"
+    enabled: false
+    agent_id: '${env.NODE_NAME}'
+    worker_id: '${env.NODE_NAME}'
     member_id: ${env.CONSOLE_ID}    # replica set member _id (unique per node)
-    orders_key: "orders/mongo/${env.NODE_NAME}"
-    ack_key: "acks/mongo/${env.NODE_NAME}"
-    report_key: "candidates/mongo/${env.NODE_NAME}"
-    health_key: "health/mongo/${env.NODE_NAME}"
+    orders_key: 'orders/mongo/${env.NODE_NAME}'
+    ack_key: 'acks/mongo/${env.NODE_NAME}'
+    report_key: 'candidates/mongo/${env.NODE_NAME}'
+    health_key: 'health/mongo/${env.NODE_NAME}'
     mongod_path: '${env.MONGO_TOOLS}/mongod.exe'
     dbpath: '${env.MONGO_DB_PATH}'
-    bind_ip: "${env.CSB_IP}"
-    bind_addr: "${env.MONGO_ADDR}"
+    bind_ip: '${env.CSB_IP}'
+    bind_addr: '${env.MONGO_ADDR}'
     temp_port: 27028                # local temporary port for offline probe
-    admin_user: "admin"
-    admin_pass: "123"
+    admin_user: 'admin'
+    admin_pass: '123'
     port: 27017
-    replset_name: "rs0"
+    replset_name: 'rs0'
     log_path: '${env.MONGO_LOG_PATH}'
     service:
       enabled: true
-      address: "${env.CSB_IP}"
-      ttl: "15s"
-      tags: ["mongo"]
+      address: '${env.CSB_IP}'
+      ttl: '15s'
+      tags: ['mongo']
 
   kafka_controller:
     enabled: false
     instance_number: 1
-    controller_id: ""
-    lock_key: "locks/kafka-controller"
-    state_key: "state/kafka-controller"
-    candidates_prefix: "candidates/kafka"
-    health_prefix: "health/kafka"
-    spec_key: "spec/kafka"
-    election_interval: "10s"
-    initial_settle_duration: "15s"   # debounce window before choosing initial 3 members
+    controller_id: ''
+    lock_key: 'locks/kafka-controller'
+    state_key: 'state/kafka-controller'
+    candidates_prefix: 'candidates/kafka'
+    health_prefix: 'health/kafka'
+    spec_key: 'spec/kafka'
+    election_interval: '10s'
+    initial_settle_duration: '15s'   # debounce window before choosing initial 3 members
     allow_degraded_single_member: true
 
   kafka_agent:
-    enabled: false
-    agent_id: "${env.NODE_NAME}"
-    worker_id: "${env.NODE_NAME}"
-    report_key: "candidates/kafka/${env.NODE_NAME}"
-    orders_key: "orders/kafka/${env.NODE_NAME}"
-    ack_key: "acks/kafka/${env.NODE_NAME}"
-    kafka_bin_dir: "H:/cots/kafka/bin/windows"
-    work_dir: "H:/infra/kafka"
-    log_dir: "H:/infra/data/kafka/log"
-    meta_log_dir: "H:/infra/data/kafka/meta"
-    broker_addr: "${env.KAFKA_BROKER_ADDR}"
-    controller_addr: "${env.KAFKA_CONTROLLER_ADDR}"
-    cluster_id: "${env.KAFKA_CLUSTER_ID}"
-    node_id: "${env.KAFKA_NODE_ID}"
-    meta_dirs:
-      - "H:/infra/data/kafka/1/meta"
-      - "H:/infra/data/kafka/2/meta"
+    enabled: true
+    agent_id: '${env.NODE_NAME}'
+    worker_id: '${env.NODE_NAME}'
+    report_key: 'candidates/kafka/${env.NODE_NAME}'
+    orders_key: 'orders/kafka/${env.NODE_NAME}'
+    ack_key: 'acks/kafka/${env.NODE_NAME}'
+    kafka_bin_dir: '${env.KAFKA_TOOLS}'
+    work_dir: 'H:/infra/kafka'
+    log_dir: '${env.KAFKA_DATA_DIR}'
+    meta_log_dir: '${env.KAFKA_DATA_DIR}'
+    broker_addr: '${env.CSB_IP}:9092'
+    controller_addr: '${env.CSB_IP}:9093'
+    cluster_id: '${env.KAFKA_CLUSTER_ID}'
+    node_id: '${env.KAFKA_NODE_ID}'
+    # meta_dirs:
     service:
       enabled: true
-      address: "${env.SVC_ADDR}"
-      ttl: "15s"
-      tags: ["kafka","kraf","combined"]
+      address: '${env.CSB_IP}'
+      ttl: '15s'
+      tags: ['kafka','kraf','combined']
 
 
   services_controller:
     enabled: false
     instance_number: 1
-    controller_id: ""
-    lock_key: "locks/services-controller"
-    state_key: "state/services-controller"
-    kafka_candidates_prefix: "candidates/kafka"
-    mongo_candidates_prefix: "candidates/mongo"
-    wait_for: ["mongo","kafka"]
+    controller_id: ''
+    lock_key: 'locks/services-controller'
+    state_key: 'state/services-controller'
+    kafka_candidates_prefix: 'candidates/kafka'
+    mongo_candidates_prefix: 'candidates/mongo'
+    wait_for: ['mongo','kafka']
     min_passing: 3
-    reconcile_interval: "10s"
+    reconcile_interval: '10s'
     services:
-      - name: "my-service-a"
+      - name: 'my-service-a'
         instances: 2
-        tags: ["app","service-a"]
-        ttl: "15s"
+        tags: ['app','service-a']
+        ttl: '15s'
         start:
-          cmd: "C:/apps/service-a/service-a.exe"
-          args: ["--mode","${ROLE}","--mongo","${MONGO_URI}","--kafka","${KAFKA_BOOTSTRAP}"]
-          work_dir: "C:/apps/service-a"
+          cmd: 'C:/apps/service-a/service-a.exe'
+          args: ['--mode','${ROLE}','--mongo','${MONGO_URI}','--kafka','${KAFKA_BOOTSTRAP}']
+          work_dir: 'C:/apps/service-a'
 
-      - name: "my-service-b"
+      - name: 'my-service-b'
         instances: 2
-        tags: ["app","service-b"]
-        ttl: "15s"
+        tags: ['app','service-b']
+        ttl: '15s'
         start:
-          cmd: "C:/apps/service-b/service-b.exe"
-          args: ["--role","${ROLE}"]
-          work_dir: "C:/apps/service-b"
+          cmd: 'C:/apps/service-b/service-b.exe'
+          args: ['--role','${ROLE}']
+          work_dir: 'C:/apps/service-b'
 
   services_agent:
     enabled: false
-    agent_id: "${env.NODE_NAME}"
-    orders_prefix: "orders/services"
-    ack_prefix: "acks/services"
-    service_address: "${env.SVC_ADDR}"
+    agent_id: '${env.NODE_NAME}'
+    orders_prefix: 'orders/services'
+    ack_prefix: 'acks/services'
+    service_address: '${env.SVC_ADDR}'
