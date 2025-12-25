@@ -91,7 +91,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	defer func() { _ = cli.Disconnect(context.Background()) }()
 
 	// wait ping
-	pingCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	for {
 		if err := cli.Database("admin").RunCommand(pingCtx, bson.D{{Key: "ping", Value: 1}}).Err(); err == nil {

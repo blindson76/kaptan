@@ -153,6 +153,7 @@ type MongoAgentConfig struct {
 	ReportKey string `yaml:"report_key"`
 
 	WorkerID string `yaml:"worker_id"`
+	MemberID *int   `yaml:"member_id"`
 
 	MongodPath  string `yaml:"mongod_path"`
 	DBPath      string `yaml:"dbpath"`

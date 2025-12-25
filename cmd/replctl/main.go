@@ -162,6 +162,7 @@ func main() {
 		if cfg.Tasks.MongoAgent.ReportKey != "" {
 			w := mw.New(mw.Config{
 				WorkerID:   cfg.Tasks.MongoAgent.WorkerID,
+				MemberID:   cfg.Tasks.MongoAgent.MemberID,
 				ReportKey:  cfg.Tasks.MongoAgent.ReportKey,
 				MongodPath: cfg.Tasks.MongoAgent.MongodPath,
 				DBPath:     cfg.Tasks.MongoAgent.DBPath,

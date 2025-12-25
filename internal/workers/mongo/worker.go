@@ -12,6 +12,7 @@ import (
 type Config struct {
 	WorkerID  string
 	ReportKey string
+	MemberID  *int
 
 	MongodPath string
 	DBPath     string
@@ -54,6 +55,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		Meta: map[string]string{
 			"dbpath": w.cfg.DBPath,
 		},
+		MongoMemberID:          w.cfg.MemberID,
 		LastSeenReplicaSetID:   rsid,
 		LastSeenReplicaSetUUID: rsuuid,
 		LastTerm:               term,

@@ -16,6 +16,8 @@ type CandidateReport struct {
 	Addr string            `json:"addr,omitempty"` // optional (mongo/kafka listen addr)
 	Meta map[string]string `json:"meta,omitempty"`
 
+	MongoMemberID *int `json:"mongoMemberId,omitempty"`
+
 	// Offline probe summary
 	LastSeenReplicaSetID   string    `json:"lastSeenReplicaSetId,omitempty"`
 	LastSeenReplicaSetUUID string    `json:"lastSeenReplicaSetUuid,omitempty"`

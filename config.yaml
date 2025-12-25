@@ -26,6 +26,7 @@ tasks:
     enabled: true
     agent_id: "${env.NODE_NAME}"
     worker_id: "${env.NODE_NAME}"
+    member_id: ${env.CONSOLE_ID}    # replica set member _id (unique per node)
     orders_key: "orders/mongo/${env.NODE_NAME}"
     ack_key: "acks/mongo/${env.NODE_NAME}"
     report_key: "candidates/mongo/${env.NODE_NAME}"

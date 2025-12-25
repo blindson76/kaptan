@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"time"
 
@@ -47,10 +48,18 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			candByID[c.ID] = c
 		}
 	}
-	buildHosts := func(ids []string) []string {
-		out := make([]string, 0, len(ids))
+	hasReplicaConfig := false
+	for _, c := range cands {
+		if c.LastSeenReplicaSetID != "" || c.LastSeenReplicaSetUUID != "" {
+			hasReplicaConfig = true
+			break
+		}
+	}
+	buildMembers := func(ids []string) []any {
+		out := make([]any, 0, len(ids))
 		for _, id := range ids {
 			host := id
+			var memberID *int
 			if c, ok := candByID[id]; ok {
 				h := c.Addr
 				if h == "" {
@@ -63,12 +72,19 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 						host = fmt.Sprintf("%s:%d", h, 27017)
 					}
 				}
+				if c.MongoMemberID != nil {
+					memberID = c.MongoMemberID
+				}
 			}
-			out = append(out, host)
+			member := map[string]any{"host": host}
+			if memberID != nil {
+				member["id"] = *memberID
+			}
+			out = append(out, member)
 		}
 		return out
 	}
-	hostMembers := buildHosts(spec.Members)
+	replMembers := buildMembers(spec.Members)
 
 	// Stop members that are no longer part of the spec.
 	_, removed := diffMembers(prev.Members, spec.Members)
@@ -89,18 +105,29 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	if len(spec.Members) > 0 {
 		target := spec.Members[0]
 		payload := map[string]any{
-			"members":     hostMembers,
+			"members":     replMembers,
 			"replSetName": spec.MongoReplicaSetID,
 		}
-		if !prevExists || len(prev.Members) == 0 {
+		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig
+		shouldReconfig := !shouldInit
+		if prevExists && len(prev.Members) > 0 {
+			sameMembers := reflect.DeepEqual(prev.Members, spec.Members)
+			sameSetID := prev.MongoReplicaSetID == spec.MongoReplicaSetID
+			sameUUID := strings.EqualFold(prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID)
+			shouldReconfig = !(sameMembers && sameSetID && sameUUID)
+		}
+
+		if shouldInit {
 			_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload)
-		} else {
+		} else if shouldReconfig {
 			// Try gentle reconfig first, then force if it fails.
 			if err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload); err != nil {
 				log.Printf("[orders] reconfigure (non-force) failed: %v; retrying with force", err)
 				payload["force"] = true
 				_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload)
 			}
+		} else {
+			log.Printf("[orders] replica set config unchanged; skipping reconfigure")
 		}
 	}
 	if p.MongoLastAppliedKey != "" {

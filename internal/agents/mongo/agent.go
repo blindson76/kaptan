@@ -357,11 +357,23 @@ func (a *Agent) rsReconfigWithForce(ctx context.Context, repl string, members []
 func buildReplCfgDoc(repl string, members []any, version int64) bson.M {
 	mems := make([]bson.M, 0, len(members))
 	for i, m := range members {
-		id, _ := m.(string)
-		if id == "" {
+		host := ""
+		memberID := i
+		switch v := m.(type) {
+		case string:
+			host = v
+		case map[string]any:
+			if h, ok := v["host"].(string); ok {
+				host = h
+			}
+			if id, ok := memberIDFromAny(v["id"]); ok {
+				memberID = id
+			}
+		}
+		if host == "" {
 			continue
 		}
-		mems = append(mems, bson.M{"_id": i, "host": id})
+		mems = append(mems, bson.M{"_id": memberID, "host": host})
 	}
 	cfg := bson.M{
 		"_id":     repl,
@@ -371,6 +383,23 @@ func buildReplCfgDoc(repl string, members []any, version int64) bson.M {
 		cfg["version"] = version
 	}
 	return cfg
+}
+
+func memberIDFromAny(v any) (int, bool) {
+	switch t := v.(type) {
+	case int:
+		return t, true
+	case int32:
+		return int(t), true
+	case int64:
+		return int(t), true
+	case float64:
+		return int(t), true
+	case float32:
+		return int(t), true
+	default:
+		return 0, false
+	}
 }
 
 func (a *Agent) connectHost() string {
