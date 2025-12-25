@@ -77,7 +77,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
         Reason: reason,
         UpdatedAt: time.Now(),
     }
-    return w.kv.PutJSON(ctx, w.cfg.ReportKey, &rep)
+    return w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, &rep)
 }
 
 func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {

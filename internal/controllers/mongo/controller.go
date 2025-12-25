@@ -333,7 +333,13 @@ func (c *Controller) eligibleCandidates() []types.CandidateReport {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		// Prefer newest oplog timestamp (most recent data continuity), fallback to report UpdatedAt
+		// Prefer newest (term, oplog timestamp) a.k.a. optime, fallback to report UpdatedAt
+		// This better matches "most recent" in Mongo terms.
+		if out[i].LastTerm != 0 || out[j].LastTerm != 0 {
+			if out[i].LastTerm != out[j].LastTerm {
+				return out[i].LastTerm > out[j].LastTerm
+			}
+		}
 		ti := out[i].LastOplogTs
 		tj := out[j].LastOplogTs
 		if !ti.IsZero() || !tj.IsZero() {

@@ -7,6 +7,11 @@ import "context"
 
 type KV interface {
     PutJSON(ctx context.Context, key string, v any) error
+
+    // PutJSONEphemeral writes the value under key and ties it to a session (behavior=delete).
+    // When the caller process dies (session isn't renewed), Consul automatically deletes the key.
+    // Implementations should keep renewing the session until ctx is cancelled.
+    PutJSONEphemeral(ctx context.Context, key string, owner string, v any) error
     GetJSON(ctx context.Context, key string, out any) (bool, error)
 
     Delete(ctx context.Context, key string) error

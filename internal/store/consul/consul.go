@@ -56,6 +56,63 @@ func (s *Store) PutJSON(ctx context.Context, key string, v any) error {
     return err
 }
 
+func (s *Store) PutJSONEphemeral(ctx context.Context, key string, owner string, v any) error {
+    if owner == "" {
+        owner = key
+    }
+    b, err := json.Marshal(v)
+    if err != nil {
+        return err
+    }
+
+    sess, _, err := s.c.Session().Create(&capi.SessionEntry{
+        Name:      owner,
+        Behavior:  capi.SessionBehaviorDelete,
+        TTL:       "10s",
+        LockDelay: 0,
+    }, nil)
+    if err != nil {
+        return err
+    }
+
+    kv := s.c.KV()
+    p := &capi.KVPair{Key: s.key(key), Value: b, Session: sess}
+
+    // Acquire the key so it is tied to the session (behavior=delete).
+    for {
+        if ctx.Err() != nil {
+            _, _ = s.c.Session().Destroy(sess, nil)
+            return ctx.Err()
+        }
+        ok, _, err := kv.Acquire(p, nil)
+        if err != nil {
+            time.Sleep(1 * time.Second)
+            continue
+        }
+        if ok {
+            break
+        }
+        time.Sleep(700 * time.Millisecond)
+    }
+
+    // Renew the session while ctx is alive; if the process dies, the session expires and Consul deletes the key.
+    go func() {
+        ticker := time.NewTicker(3 * time.Second)
+        defer ticker.Stop()
+        for {
+            select {
+            case <-ticker.C:
+                _, _, _ = s.c.Session().Renew(sess, nil)
+            case <-ctx.Done():
+                _, _ = s.c.Session().Destroy(sess, nil)
+                return
+            }
+        }
+    }()
+
+    return nil
+}
+
 func (s *Store) GetJSON(ctx context.Context, key string, out any) (bool, error) {
     p, _, err := s.c.KV().Get(s.key(key), nil)
     if err != nil {

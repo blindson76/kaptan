@@ -54,13 +54,6 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			candByID[c.ID] = c
 		}
 	}
-	hasReplicaConfig := false
-	for _, c := range cands {
-		if c.LastSeenReplicaSetID != "" || c.LastSeenReplicaSetUUID != "" {
-			hasReplicaConfig = true
-			break
-		}
-	}
 	healthByID := map[string]types.HealthStatus{}
 	if p.MongoHealthPrefix != "" {
 		healthByID = loadHealthByID(ctx, p.KV, p.MongoHealthPrefix)
@@ -122,62 +115,93 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			"members":     replMembers,
 			"replSetName": spec.MongoReplicaSetID,
 		}
-		hasHealthyReplica := hasHealthyReplicaMember(healthByID)
-		hasHealthReplicaConfig := hasReplicaConfigFromHealth(healthByID, spec.Members)
-		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig && !hasHealthyReplica && !hasHealthReplicaConfig
-		shouldReconfig := !shouldInit
+
+		// Initial/bootstrapping decisions must be based on candidate reports (offline probe).
+		// Health is only used to target the current PRIMARY when doing a (non-force) reconfig.
+		specHasReplicaConfig := hasReplicaConfigAfterWipe(spec, candByID)
+		shouldInit := !specHasReplicaConfig
+		shouldReconfig := false
 		reconfigReasons := []string{}
-		if prevExists && len(prev.Members) > 0 {
-			sameMembers := reflect.DeepEqual(prev.Members, spec.Members)
-			sameSetID := prev.MongoReplicaSetID == spec.MongoReplicaSetID
-			sameUUID := strings.EqualFold(prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID)
-			shouldReconfig = !(sameMembers && sameSetID && sameUUID)
-			if shouldReconfig {
-				if !sameMembers {
-					reconfigReasons = append(reconfigReasons, fmt.Sprintf("members changed (prev=%v new=%v)", prev.Members, spec.Members))
+
+		if !shouldInit {
+			if prevExists && len(prev.Members) > 0 {
+				sameMembers := reflect.DeepEqual(prev.Members, spec.Members)
+				sameSetID := prev.MongoReplicaSetID == spec.MongoReplicaSetID
+				sameUUID := strings.EqualFold(prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID)
+				shouldReconfig = !(sameMembers && sameSetID && sameUUID)
+				if shouldReconfig {
+					if !sameMembers {
+						reconfigReasons = append(reconfigReasons, fmt.Sprintf("members changed (prev=%v new=%v)", prev.Members, spec.Members))
+					}
+					if !sameSetID {
+						reconfigReasons = append(reconfigReasons, fmt.Sprintf("replicaSetID changed (prev=%q new=%q)", prev.MongoReplicaSetID, spec.MongoReplicaSetID))
+					}
+					if !sameUUID {
+						reconfigReasons = append(reconfigReasons, fmt.Sprintf("replicaSetUUID changed (prev=%q new=%q)", prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID))
+					}
 				}
-				if !sameSetID {
-					reconfigReasons = append(reconfigReasons, fmt.Sprintf("replicaSetID changed (prev=%q new=%q)", prev.MongoReplicaSetID, spec.MongoReplicaSetID))
-				}
-				if !sameUUID {
-					reconfigReasons = append(reconfigReasons, fmt.Sprintf("replicaSetUUID changed (prev=%q new=%q)", prev.MongoReplicaSetUUID, spec.MongoReplicaSetUUID))
-				}
-			}
-		} else if shouldReconfig {
-			reconfigReasons = append(reconfigReasons, "previous spec missing/empty")
-			if hasReplicaConfig {
-				reconfigReasons = append(reconfigReasons, "existing replica config detected")
-			}
-			if hasHealthyReplica {
-				reconfigReasons = append(reconfigReasons, "healthy replica member detected")
-			}
-			if hasHealthReplicaConfig {
-				reconfigReasons = append(reconfigReasons, "health reports replica config")
+			} else {
+				// Previous spec missing/empty, but desired members report an existing replica config.
+				// Ensure config matches the newly published spec.
+				shouldReconfig = true
+				reconfigReasons = append(reconfigReasons, "previous spec missing/empty")
+				reconfigReasons = append(reconfigReasons, "candidate reports replica config")
 			}
 		}
 
 		if shouldInit {
-			target := spec.Members[0]
-			_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload)
-		} else if shouldReconfig {
+			target := selectInitTarget(spec, candByID)
+			if err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload); err != nil {
+				if isAlreadyInitialized(err) {
+					// Race/mis-detection: fall back to reconfig path.
+					log.Printf("[orders] mongo init target=%s already initialized; switching to reconfigure", target)
+					shouldInit = false
+					shouldReconfig = true
+				} else {
+					log.Printf("[orders] mongo init failed target=%s err=%v", target, err)
+				}
+			}
+		}
+
+		if shouldReconfig {
 			if len(reconfigReasons) == 0 {
 				reconfigReasons = append(reconfigReasons, "spec change detected")
 			}
 			log.Printf("[orders] mongo reconfigure reason=%s", strings.Join(reconfigReasons, ", "))
 			// Try reconfig on a writable PRIMARY first, then force if it still fails.
 			reconfigTargets := mergeMembers(spec.Members, prev.Members)
+			reconfigTargets = filterWipedTargets(reconfigTargets, spec.MongoWipeMembers)
 			primary := selectPrimaryTarget(reconfigTargets, healthByID)
 			orderedTargets := moveToFront(reconfigTargets, primary)
 			if err := p.issueReconfigTargets(ctx, orderedTargets, epoch, payload); err != nil {
-				log.Printf("[orders] reconfigure (non-force) failed: %v; retrying with force", err)
-				forceTarget := selectForceTarget(primary, orderedTargets, healthByID)
-				if forceTarget != "" {
-					forced := copyMap(payload)
-					forced["force"] = true
-					_ = p.issueAndWait(ctx, orders.KindMongo, forceTarget, orders.ActionReconfigure, epoch, forced)
+				// If replica set is not initialized, recover by initiating on the most recent member.
+				if isNotYetInitialized(err) {
+					target := selectInitTarget(spec, candByID)
+					log.Printf("[orders] mongo reconfig failed (not initialized); initiating target=%s", target)
+					if err2 := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload); err2 != nil {
+						log.Printf("[orders] mongo init (fallback) failed target=%s err=%v", target, err2)
+					}
+				} else {
+					log.Printf("[orders] reconfigure (non-force) failed: %v; retrying with force", err)
+					forceTarget := selectForceTarget(primary, orderedTargets, healthByID, candByID, spec.MongoWipeMembers)
+					if forceTarget != "" {
+						forced := copyMap(payload)
+						forced["force"] = true
+						if err2 := p.issueAndWait(ctx, orders.KindMongo, forceTarget, orders.ActionReconfigure, epoch, forced); err2 != nil {
+							if isNotYetInitialized(err2) {
+								target := selectInitTarget(spec, candByID)
+								log.Printf("[orders] mongo force reconfig failed (not initialized); initiating target=%s", target)
+								if err3 := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload); err3 != nil {
+									log.Printf("[orders] mongo init (fallback) failed target=%s err=%v", target, err3)
+								}
+							} else {
+								log.Printf("[orders] mongo force reconfig failed target=%s err=%v", forceTarget, err2)
+							}
+						}
+					}
 				}
 			}
-		} else {
+		} else if !shouldInit {
 			log.Printf("[orders] replica set config unchanged; skipping reconfigure")
 		}
 	}
@@ -501,21 +525,6 @@ func selectPrimaryTarget(targets []string, healthByID map[string]types.HealthSta
 	return ""
 }
 
-func selectForceTarget(primary string, targets []string, healthByID map[string]types.HealthStatus) string {
-	if primary != "" {
-		return primary
-	}
-	for _, id := range targets {
-		if h, ok := healthByID[id]; ok && h.Healthy {
-			return id
-		}
-	}
-	if len(targets) > 0 {
-		return targets[0]
-	}
-	return ""
-}
-
 func isMongoPrimary(reason string) bool {
 	state, stateStr, ok := parseMongoState(reason)
 	if !ok {
@@ -629,4 +638,160 @@ func copyMap(in map[string]any) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+func hasReplicaConfigAfterWipe(spec types.ReplicaSpec, candByID map[string]types.CandidateReport) bool {
+	if len(spec.Members) == 0 {
+		return false
+	}
+	for _, id := range spec.Members {
+		if id == "" {
+			continue
+		}
+		if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
+			continue
+		}
+		c, ok := candByID[id]
+		if !ok {
+			continue
+		}
+		if c.LastSeenReplicaSetID != "" || c.LastSeenReplicaSetUUID != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func filterWipedTargets(targets []string, wipe map[string]bool) []string {
+	if len(targets) == 0 || len(wipe) == 0 {
+		return targets
+	}
+	out := make([]string, 0, len(targets))
+	for _, id := range targets {
+		if id == "" {
+			continue
+		}
+		if wipe != nil && wipe[id] {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func selectInitTarget(spec types.ReplicaSpec, candByID map[string]types.CandidateReport) string {
+	// Prefer a non-wiped member with the newest optime (term, oplog timestamp).
+	// This ensures the initial PRIMARY is the most up-to-date member.
+	best := ""
+	var bestCand types.CandidateReport
+	bestSet := false
+	for _, id := range spec.Members {
+		if id == "" {
+			continue
+		}
+		if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
+			continue
+		}
+		c, ok := candByID[id]
+		if !ok {
+			if best == "" {
+				best = id
+			}
+			continue
+		}
+		if !bestSet || candidateNewer(c, bestCand) {
+			best = id
+			bestCand = c
+			bestSet = true
+		}
+	}
+	if best != "" {
+		return best
+	}
+	// If every desired member is marked wiped, just pick the first member.
+	if len(spec.Members) > 0 {
+		return spec.Members[0]
+	}
+	return ""
+}
+
+func selectForceTarget(primary string, targets []string, healthByID map[string]types.HealthStatus, candByID map[string]types.CandidateReport, wipe map[string]bool) string {
+	if primary != "" && !(wipe != nil && wipe[primary]) {
+		return primary
+	}
+
+	// Prefer a healthy (or unknown) target with the newest optime.
+	best := ""
+	var bestCand types.CandidateReport
+	bestSet := false
+	for _, id := range targets {
+		if id == "" {
+			continue
+		}
+		if wipe != nil && wipe[id] {
+			continue
+		}
+		if h, ok := healthByID[id]; ok && !h.Healthy {
+			continue
+		}
+		c, ok := candByID[id]
+		if !ok {
+			if best == "" {
+				best = id
+			}
+			continue
+		}
+		if !bestSet || candidateNewer(c, bestCand) {
+			best = id
+			bestCand = c
+			bestSet = true
+		}
+	}
+	if best != "" {
+		return best
+	}
+
+	// Fallback: first non-wiped target (if any)
+	for _, id := range targets {
+		if id != "" && !(wipe != nil && wipe[id]) {
+			return id
+		}
+	}
+	return ""
+}
+
+func candidateNewer(a, b types.CandidateReport) bool {
+	if a.LastTerm != b.LastTerm {
+		return a.LastTerm > b.LastTerm
+	}
+	if !a.LastOplogTs.IsZero() || !b.LastOplogTs.IsZero() {
+		if a.LastOplogTs.Equal(b.LastOplogTs) {
+			return a.UpdatedAt.After(b.UpdatedAt)
+		}
+		return a.LastOplogTs.After(b.LastOplogTs)
+	}
+	return a.UpdatedAt.After(b.UpdatedAt)
+}
+
+func isNotYetInitialized(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "notyetinitialized") ||
+		strings.Contains(msg, "not yet initialized") ||
+		strings.Contains(msg, "no replset config has been received") ||
+		strings.Contains(msg, "no replica set config has been received") ||
+		strings.Contains(msg, "replica set is not initialized")
+}
+
+func isAlreadyInitialized(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "alreadyinitialized") ||
+		strings.Contains(msg, "already initialized") ||
+		strings.Contains(msg, "already initiated") ||
+		strings.Contains(msg, "alreadyinitiated")
 }
