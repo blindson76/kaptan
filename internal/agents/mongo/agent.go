@@ -3,7 +3,9 @@ package mongo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -299,7 +301,11 @@ func (a *Agent) shutdown(ctx context.Context) error {
 		return err
 	}
 	defer cli.Disconnect(context.Background())
-	return cli.Database("admin").RunCommand(ctx, bson.D{{Key: "shutdown", Value: 1}}).Err()
+	err = cli.Database("admin").RunCommand(ctx, bson.D{{Key: "shutdown", Value: 1}}).Err()
+	if err == nil || isExpectedShutdownErr(err) {
+		return nil
+	}
+	return err
 }
 
 func (a *Agent) watchMongod(ctx context.Context, cmd *exec.Cmd) {
@@ -381,15 +387,61 @@ func (a *Agent) rsReconfig(ctx context.Context, repl string, members []any) erro
 
 func (a *Agent) rsReconfigWithForce(ctx context.Context, repl string, members []any, force bool) error {
 	repl = nz(repl, a.cfg.ReplSetName)
-	cfg := buildReplCfgDoc(repl, members, time.Now().Unix())
 	cli, err := a.mongoClient(ctx)
 	if err != nil {
 		return err
 	}
 	defer cli.Disconnect(context.Background())
+	version := nextReplConfigVersion(ctx, cli, time.Now().Unix())
+	cfg := buildReplCfgDoc(repl, members, version)
 	cmd := bson.D{{Key: "replSetReconfig", Value: cfg}, {Key: "force", Value: force}}
 	log.Printf("[mongo-agent] replSetReconfig config=%v force=%v", cfg, force)
 	return cli.Database("admin").RunCommand(ctx, cmd).Err()
+}
+
+func nextReplConfigVersion(ctx context.Context, cli *mongo.Client, fallback int64) int64 {
+	if fallback <= 0 {
+		fallback = time.Now().Unix()
+	}
+	current, ok := fetchReplConfigVersion(ctx, cli)
+	if !ok {
+		return fallback
+	}
+	if current >= fallback {
+		return current + 1
+	}
+	return fallback
+}
+
+func fetchReplConfigVersion(ctx context.Context, cli *mongo.Client) (int64, bool) {
+	var res bson.M
+	if err := cli.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetGetConfig", Value: 1}}).Decode(&res); err == nil {
+		if v, ok := versionFromConfigDoc(res["config"]); ok {
+			return v, true
+		}
+	}
+
+	var st bson.M
+	if err := cli.Database("admin").RunCommand(ctx, bson.D{{Key: "replSetGetStatus", Value: 1}}).Decode(&st); err != nil {
+		return 0, false
+	}
+	if v, ok := int64FromAny(st["configVersion"]); ok {
+		return v, true
+	}
+	return 0, false
+}
+
+func versionFromConfigDoc(v any) (int64, bool) {
+	switch cfg := v.(type) {
+	case bson.M:
+		return int64FromAny(cfg["version"])
+	case map[string]any:
+		return int64FromAny(cfg["version"])
+	case bson.D:
+		return int64FromAny(cfg.Map()["version"])
+	default:
+		return 0, false
+	}
 }
 func buildReplCfgDoc(repl string, members []any, version int64) bson.M {
 	mems := make([]bson.M, 0, len(members))
@@ -437,6 +489,56 @@ func memberIDFromAny(v any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func int64FromAny(v any) (int64, bool) {
+	switch t := v.(type) {
+	case int:
+		return int64(t), true
+	case int32:
+		return int64(t), true
+	case int64:
+		return t, true
+	case float64:
+		return int64(t), true
+	case float32:
+		return int64(t), true
+	default:
+		return 0, false
+	}
+}
+
+func isExpectedShutdownErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return true
+	}
+	var cmdErr mongo.CommandError
+	if errors.As(err, &cmdErr) {
+		switch cmdErr.Code {
+		case 91, 11600:
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "shutdown in progress") {
+		return true
+	}
+	if strings.Contains(msg, "socket was unexpectedly closed") {
+		return true
+	}
+	if strings.Contains(msg, "use of closed network connection") {
+		return true
+	}
+	if strings.Contains(msg, "broken pipe") {
+		return true
+	}
+	if strings.Contains(msg, "connection") && strings.Contains(msg, "closed") {
+		return true
+	}
+	return false
 }
 
 func (a *Agent) connectHost() string {

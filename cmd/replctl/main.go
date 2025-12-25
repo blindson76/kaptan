@@ -15,6 +15,7 @@ import (
 	mongoagent "github.com/umitbozkurt/consul-replctl/internal/agents/mongo"
 	serviceagent "github.com/umitbozkurt/consul-replctl/internal/agents/service"
 	"github.com/umitbozkurt/consul-replctl/internal/config"
+	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/kafka"
 	mctl "github.com/umitbozkurt/consul-replctl/internal/controllers/mongo"
 	sctl "github.com/umitbozkurt/consul-replctl/internal/controllers/services"
@@ -37,6 +38,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load error: %v", err)
 	}
+
+	nodeName := cfg.NodeName
+	if nodeName == "" {
+		nodeName, _ = os.Hostname()
+	}
+	logging.Setup(nodeName)
 
 	ctx, cancel := runtime.WithSignals(context.Background())
 	defer cancel()
@@ -71,18 +78,13 @@ func main() {
 		MongoOrdersPrefix:     "orders/mongo",
 		MongoAckPrefix:        "acks/mongo",
 		MongoCandidatesPrefix: "candidates/mongo",
+		MongoHealthPrefix:     cfg.Tasks.MongoController.HealthPrefix,
 		MongoLastAppliedKey:   "provider/mongo/last_applied_spec",
 
 		KafkaOrdersPrefix:     "orders/kafka",
 		KafkaAckPrefix:        "acks/kafka",
 		KafkaCandidatesPrefix: "candidates/kafka",
 		KafkaLastAppliedKey:   "provider/kafka/last_applied_spec",
-	}
-
-	// derive host info
-	nodeName := cfg.NodeName
-	if nodeName == "" {
-		nodeName, _ = os.Hostname()
 	}
 
 	// derive controller IDs (unique per instance)

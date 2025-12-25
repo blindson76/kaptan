@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -69,6 +70,8 @@ type Controller struct {
 	specVersion int64
 
 	initialDeadline time.Time
+	waitHealthSince time.Time
+	waitHealthSpecVersion int64
 }
 
 func New(cfg Config, kv store.KV, locker interface {
@@ -223,35 +226,36 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 	// 3) wait replica healthy
 	sm.Configure(StWaitHealth).
 		OnEntry(func(ctx context.Context, _ ...any) error {
-			log.Printf("[mongo] wait_health: waiting until spec members are healthy")
+			log.Printf("[mongo] wait_health: waiting until spec members are healthy and primary is elected")
 			_ = c.loadSpec(ctx)
+			c.resetWaitHealthIfNeeded(time.Now())
 			return nil
 		}).
 		Ignore(TrCandidates).
 		Permit(TrHealth, StReconcile, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return c.needsReplace(true)
+			return c.needsReplaceWaitHealth()
 		}).
 		Permit(TrTimer, StReconcile, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return c.needsReplace(true)
+			return c.needsReplaceWaitHealth()
 		}).
 		PermitReentry(TrHealth, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.specAllHealthy() && !c.needsReplace(true)
+			return !c.specReadyForMonitor() && !c.needsReplaceWaitHealth()
 		}).
 		PermitReentry(TrTimer, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.specAllHealthy() && !c.needsReplace(true)
+			return !c.specReadyForMonitor() && !c.needsReplaceWaitHealth()
 		}).
 		Permit(TrHealth, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
 			log.Printf("[mongo] evaluating health after HEALTH trigger, current spec members: %v", c.spec)
-			return c.specAllHealthy()
+			return c.specReadyForMonitor()
 		}).
 		Permit(TrTimer, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return c.specAllHealthy()
+			return c.specReadyForMonitor()
 		})
 
 	// 4) monitor failed member and replace
@@ -418,7 +422,70 @@ func (c *Controller) specAllHealthy() bool {
 	return true
 }
 
+func (c *Controller) specReadyForMonitor() bool {
+	return c.specAllHealthy() && c.specHasPrimary()
+}
+
+func (c *Controller) resetWaitHealthIfNeeded(now time.Time) {
+	if c.waitHealthSince.IsZero() || c.waitHealthSpecVersion != c.specVersion {
+		c.waitHealthSince = now
+		c.waitHealthSpecVersion = c.specVersion
+	}
+}
+
+func (c *Controller) waitHealthGrace() time.Duration {
+	grace := c.cfg.ElectionInterval * 3
+	if grace <= 0 {
+		grace = 15 * time.Second
+	}
+	if grace < 15*time.Second {
+		grace = 15 * time.Second
+	}
+	return grace
+}
+
+func (c *Controller) needsReplaceWaitHealth() bool {
+	now := time.Now()
+	c.resetWaitHealthIfNeeded(now)
+	if now.Sub(c.waitHealthSince) < c.waitHealthGrace() {
+		return c.needsReplaceAllowMissing(true)
+	}
+	return c.needsReplace(true)
+}
+
+func (c *Controller) specHasPrimary() bool {
+	if len(c.spec.Members) == 0 {
+		return false
+	}
+	h := c.healthMap(time.Now())
+	reasonByID := map[string]string{}
+	for _, s := range c.health {
+		if s.ID == "" {
+			continue
+		}
+		reasonByID[s.ID] = s.Reason
+	}
+	for _, id := range c.spec.Members {
+		state, ok := h[id]
+		if !ok || !state.healthy {
+			continue
+		}
+		if isMongoPrimary(reasonByID[id]) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) needsReplace(onlyFatal bool) bool {
+	return c.needsReplaceWithOptions(onlyFatal, false)
+}
+
+func (c *Controller) needsReplaceAllowMissing(onlyFatal bool) bool {
+	return c.needsReplaceWithOptions(onlyFatal, true)
+}
+
+func (c *Controller) needsReplaceWithOptions(onlyFatal bool, allowMissing bool) bool {
 	if len(c.spec.Members) == 0 {
 		return false
 	}
@@ -427,6 +494,9 @@ func (c *Controller) needsReplace(onlyFatal bool) bool {
 	for i, id := range c.spec.Members {
 		state, exists := h[id]
 		if !exists {
+			if allowMissing {
+				continue
+			}
 			failed = i
 			break
 		}
@@ -573,6 +643,46 @@ func (c *Controller) healthMap(now time.Time) map[string]healthState {
 type healthState struct {
 	healthy bool
 	fatal   bool
+}
+
+func isMongoPrimary(reason string) bool {
+	state, stateStr, ok := parseMongoState(reason)
+	if !ok {
+		return false
+	}
+	if state == 1 {
+		return true
+	}
+	return strings.EqualFold(stateStr, "PRIMARY")
+}
+
+func parseMongoState(reason string) (int, string, bool) {
+	if reason == "" {
+		return 0, "", false
+	}
+	var note struct {
+		Mongo struct {
+			State    int    `json:"state"`
+			StateStr string `json:"stateStr"`
+		} `json:"mongo"`
+	}
+	if err := json.Unmarshal([]byte(reason), &note); err == nil {
+		if note.Mongo.State != 0 || note.Mongo.StateStr != "" {
+			return note.Mongo.State, note.Mongo.StateStr, true
+		}
+	}
+	upper := strings.ToUpper(reason)
+	switch {
+	case strings.Contains(upper, "PRIMARY"):
+		return 1, "PRIMARY", true
+	case strings.Contains(upper, "SECONDARY"):
+		return 2, "SECONDARY", true
+	case strings.Contains(upper, "ARBITER"):
+		return 7, "ARBITER", true
+	case strings.Contains(upper, "REMOVED"):
+		return 10, "REMOVED", true
+	}
+	return 0, "", false
 }
 
 func yellowf(format string, args ...any) string {

@@ -2,6 +2,7 @@ package consulorders
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/umitbozkurt/consul-replctl/internal/orders"
 	"github.com/umitbozkurt/consul-replctl/internal/store"
 	"github.com/umitbozkurt/consul-replctl/internal/types"
+	"golang.org/x/sync/errgroup"
 )
 
 type Provider struct {
@@ -19,6 +21,7 @@ type Provider struct {
 	MongoOrdersPrefix     string
 	MongoAckPrefix        string
 	MongoCandidatesPrefix string
+	MongoHealthPrefix     string
 	KafkaOrdersPrefix     string
 	KafkaAckPrefix        string
 
@@ -34,6 +37,9 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	epoch := spec.Version
 	if p.MongoCandidatesPrefix == "" {
 		p.MongoCandidatesPrefix = "candidates/mongo"
+	}
+	if p.MongoHealthPrefix == "" {
+		p.MongoHealthPrefix = "health/mongo"
 	}
 	if p.MongoLastAppliedKey == "" {
 		p.MongoLastAppliedKey = "provider/mongo/last_applied_spec"
@@ -53,6 +59,17 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 		if c.LastSeenReplicaSetID != "" || c.LastSeenReplicaSetUUID != "" {
 			hasReplicaConfig = true
 			break
+		}
+	}
+	healthByID := map[string]types.HealthStatus{}
+	if p.MongoHealthPrefix != "" {
+		var health []types.HealthStatus
+		if err := p.KV.ListJSON(ctx, p.MongoHealthPrefix, &health); err == nil {
+			for _, h := range health {
+				if h.ID != "" {
+					healthByID[h.ID] = h
+				}
+			}
 		}
 	}
 	buildMembers := func(ids []string) []any {
@@ -86,24 +103,24 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 	replMembers := buildMembers(spec.Members)
 
-	// Stop members that are no longer part of the spec.
 	_, removed := diffMembers(prev.Members, spec.Members)
-	for _, id := range removed {
-		_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStop, epoch, nil)
-	}
 
+	startTasks := make([]orderTask, 0, len(spec.Members))
 	for _, id := range spec.Members {
-		if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
-			_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
-		}
-		if err := p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStart, epoch, map[string]any{
-			"replSetName": spec.MongoReplicaSetID,
-		}); err != nil {
-			return err
-		}
+		id := id
+		startTasks = append(startTasks, func(ctx context.Context) error {
+			if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
+				_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
+			}
+			return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStart, epoch, map[string]any{
+				"replSetName": spec.MongoReplicaSetID,
+			})
+		})
+	}
+	if err := runParallel(ctx, startTasks); err != nil {
+		return err
 	}
 	if len(spec.Members) > 0 {
-		target := spec.Members[0]
 		payload := map[string]any{
 			"members":     replMembers,
 			"replSetName": spec.MongoReplicaSetID,
@@ -135,22 +152,41 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 		}
 
 		if shouldInit {
+			target := spec.Members[0]
 			_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionInit, epoch, payload)
 		} else if shouldReconfig {
 			if len(reconfigReasons) == 0 {
 				reconfigReasons = append(reconfigReasons, "spec change detected")
 			}
 			log.Printf("[orders] mongo reconfigure reason=%s", strings.Join(reconfigReasons, ", "))
-			// Try gentle reconfig first, then force if it fails.
-			if err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload); err != nil {
+			// Try reconfig on a writable PRIMARY first, then force if it still fails.
+			reconfigTargets := mergeMembers(spec.Members, prev.Members)
+			primary := selectPrimaryTarget(reconfigTargets, healthByID)
+			orderedTargets := moveToFront(reconfigTargets, primary)
+			if err := p.issueReconfigTargets(ctx, orderedTargets, epoch, payload); err != nil {
 				log.Printf("[orders] reconfigure (non-force) failed: %v; retrying with force", err)
-				payload["force"] = true
-				_ = p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload)
+				forceTarget := selectForceTarget(primary, orderedTargets, healthByID)
+				if forceTarget != "" {
+					forced := copyMap(payload)
+					forced["force"] = true
+					_ = p.issueAndWait(ctx, orders.KindMongo, forceTarget, orders.ActionReconfigure, epoch, forced)
+				}
 			}
 		} else {
 			log.Printf("[orders] replica set config unchanged; skipping reconfigure")
 		}
 	}
+
+	// Stop members that are no longer part of the spec after config changes.
+	stopTasks := make([]orderTask, 0, len(removed))
+	for _, id := range removed {
+		id := id
+		stopTasks = append(stopTasks, func(ctx context.Context) error {
+			return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStop, epoch, nil)
+		})
+	}
+	runParallelBestEffort(ctx, stopTasks)
+
 	if p.MongoLastAppliedKey != "" {
 		_ = p.KV.PutJSON(ctx, p.MongoLastAppliedKey, &spec)
 	}
@@ -199,6 +235,7 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 
 	// remove voters first
+	stopTasks := make([]orderTask, 0, len(removed))
 	for _, id := range removed {
 		voterID := nodeIDByID[id]
 		if voterID != "" && coordinatorID != "" && bootstrap != "" {
@@ -207,15 +244,24 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 				"voterId":         voterID,
 			})
 		}
-		_ = p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStop, epoch, nil)
-	}
-
-	// start added members
-	for _, id := range added {
-		_ = p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-			"bootstrapServers": spec.KafkaBootstrapServers,
+		id := id
+		stopTasks = append(stopTasks, func(ctx context.Context) error {
+			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStop, epoch, nil)
 		})
 	}
+	runParallelBestEffort(ctx, stopTasks)
+
+	// start added members
+	startTasks := make([]orderTask, 0, len(added))
+	for _, id := range added {
+		id := id
+		startTasks = append(startTasks, func(ctx context.Context) error {
+			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+				"bootstrapServers": spec.KafkaBootstrapServers,
+			})
+		})
+	}
+	runParallelBestEffort(ctx, startTasks)
 
 	// add voters
 	for _, id := range added {
@@ -239,11 +285,16 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 
 	// ensure started
+	ensureTasks := make([]orderTask, 0, len(spec.Members))
 	for _, id := range spec.Members {
-		_ = p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-			"bootstrapServers": spec.KafkaBootstrapServers,
+		id := id
+		ensureTasks = append(ensureTasks, func(ctx context.Context) error {
+			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+				"bootstrapServers": spec.KafkaBootstrapServers,
+			})
 		})
 	}
+	runParallelBestEffort(ctx, ensureTasks)
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)
 	return nil
@@ -273,6 +324,37 @@ func diffMembers(old, neu []string) (added []string, removed []string) {
 		}
 	}
 	return
+}
+
+type orderTask func(context.Context) error
+
+func runParallel(ctx context.Context, tasks []orderTask) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	g, ctx := errgroup.WithContext(ctx)
+	for _, task := range tasks {
+		task := task
+		g.Go(func() error {
+			return task(ctx)
+		})
+	}
+	return g.Wait()
+}
+
+func runParallelBestEffort(ctx context.Context, tasks []orderTask) {
+	if len(tasks) == 0 {
+		return
+	}
+	var g errgroup.Group
+	for _, task := range tasks {
+		task := task
+		g.Go(func() error {
+			_ = task(ctx)
+			return nil
+		})
+	}
+	_ = g.Wait()
 }
 
 func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target string, action orders.Action, epoch int64, payload map[string]any) error {
@@ -308,4 +390,156 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 	}
 	log.Printf("[orders] ack timeout kind=%s target=%s action=%s epoch=%d", kind, target, action, epoch)
 	return nil
+}
+
+func (p Provider) issueReconfigTargets(ctx context.Context, targets []string, epoch int64, payload map[string]any) error {
+	var lastErr error
+	for _, target := range targets {
+		if target == "" {
+			continue
+		}
+		err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, payload)
+		if err == nil {
+			return nil
+		}
+		if isNotWritablePrimary(err) {
+			lastErr = err
+			log.Printf("[orders] reconfigure target=%s not writable primary; trying next", target)
+			continue
+		}
+		return err
+	}
+	return lastErr
+}
+
+func mergeMembers(primary []string, extra []string) []string {
+	out := make([]string, 0, len(primary)+len(extra))
+	seen := map[string]bool{}
+	for _, id := range primary {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	for _, id := range extra {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
+}
+
+func moveToFront(list []string, preferred string) []string {
+	if preferred == "" {
+		return list
+	}
+	found := false
+	for _, id := range list {
+		if id == preferred {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return list
+	}
+	out := make([]string, 0, len(list))
+	out = append(out, preferred)
+	for _, id := range list {
+		if id == preferred {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func selectPrimaryTarget(targets []string, healthByID map[string]types.HealthStatus) string {
+	for _, id := range targets {
+		h, ok := healthByID[id]
+		if !ok || !h.Healthy {
+			continue
+		}
+		if isMongoPrimary(h.Reason) {
+			return id
+		}
+	}
+	return ""
+}
+
+func selectForceTarget(primary string, targets []string, healthByID map[string]types.HealthStatus) string {
+	if primary != "" {
+		return primary
+	}
+	for _, id := range targets {
+		if h, ok := healthByID[id]; ok && h.Healthy {
+			return id
+		}
+	}
+	if len(targets) > 0 {
+		return targets[0]
+	}
+	return ""
+}
+
+func isMongoPrimary(reason string) bool {
+	state, stateStr, ok := parseMongoState(reason)
+	if !ok {
+		return false
+	}
+	if state == 1 {
+		return true
+	}
+	return strings.EqualFold(stateStr, "PRIMARY")
+}
+
+func parseMongoState(reason string) (int, string, bool) {
+	if reason == "" {
+		return 0, "", false
+	}
+	var note struct {
+		Mongo struct {
+			State    int    `json:"state"`
+			StateStr string `json:"stateStr"`
+		} `json:"mongo"`
+	}
+	if err := json.Unmarshal([]byte(reason), &note); err == nil {
+		if note.Mongo.State != 0 || note.Mongo.StateStr != "" {
+			return note.Mongo.State, note.Mongo.StateStr, true
+		}
+	}
+	upper := strings.ToUpper(reason)
+	switch {
+	case strings.Contains(upper, "PRIMARY"):
+		return 1, "PRIMARY", true
+	case strings.Contains(upper, "SECONDARY"):
+		return 2, "SECONDARY", true
+	case strings.Contains(upper, "ARBITER"):
+		return 7, "ARBITER", true
+	case strings.Contains(upper, "REMOVED"):
+		return 10, "REMOVED", true
+	}
+	return 0, "", false
+}
+
+func isNotWritablePrimary(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "notwritableprimary") ||
+		strings.Contains(msg, "not writable primary") ||
+		strings.Contains(msg, "not primary") ||
+		strings.Contains(msg, "not master")
+}
+
+func copyMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
