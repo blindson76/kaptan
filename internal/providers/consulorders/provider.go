@@ -125,7 +125,9 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			"members":     replMembers,
 			"replSetName": spec.MongoReplicaSetID,
 		}
-		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig
+		hasHealthyReplica := hasHealthyReplicaMember(healthByID)
+		hasHealthReplicaConfig := hasReplicaConfigFromHealth(healthByID, spec.Members)
+		shouldInit := (!prevExists || len(prev.Members) == 0) && !hasReplicaConfig && !hasHealthyReplica && !hasHealthReplicaConfig
 		shouldReconfig := !shouldInit
 		reconfigReasons := []string{}
 		if prevExists && len(prev.Members) > 0 {
@@ -148,6 +150,12 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 			reconfigReasons = append(reconfigReasons, "previous spec missing/empty")
 			if hasReplicaConfig {
 				reconfigReasons = append(reconfigReasons, "existing replica config detected")
+			}
+			if hasHealthyReplica {
+				reconfigReasons = append(reconfigReasons, "healthy replica member detected")
+			}
+			if hasHealthReplicaConfig {
+				reconfigReasons = append(reconfigReasons, "health reports replica config")
 			}
 		}
 
@@ -506,33 +514,89 @@ func isMongoPrimary(reason string) bool {
 	return strings.EqualFold(stateStr, "PRIMARY")
 }
 
+func hasHealthyReplicaMember(healthByID map[string]types.HealthStatus) bool {
+	for _, h := range healthByID {
+		if !h.Healthy {
+			continue
+		}
+		state, stateStr, ok := parseMongoState(h.Reason)
+		if !ok {
+			continue
+		}
+		if state == 1 || state == 2 || state == 7 {
+			return true
+		}
+		if strings.EqualFold(stateStr, "PRIMARY") || strings.EqualFold(stateStr, "SECONDARY") || strings.EqualFold(stateStr, "ARBITER") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasReplicaConfigFromHealth(healthByID map[string]types.HealthStatus, members []string) bool {
+	if len(healthByID) == 0 || len(members) == 0 {
+		return false
+	}
+	memberSet := map[string]bool{}
+	for _, id := range members {
+		if id != "" {
+			memberSet[id] = true
+		}
+	}
+	for id, h := range healthByID {
+		if !memberSet[id] {
+			continue
+		}
+		_, _, rsid, ok := parseMongoNote(h.Reason)
+		if ok && rsid != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func parseMongoState(reason string) (int, string, bool) {
+	state, stateStr, _, ok := parseMongoNote(reason)
+	return state, stateStr, ok
+}
+
+func parseMongoNote(reason string) (int, string, string, bool) {
 	if reason == "" {
-		return 0, "", false
+		return 0, "", "", false
 	}
 	var note struct {
 		Mongo struct {
-			State    int    `json:"state"`
-			StateStr string `json:"stateStr"`
+			State         int    `json:"state"`
+			StateStr      string `json:"stateStr"`
+			ReplicaSetID  string `json:"replicaSetId"`
+			ReplicaSetID2 string `json:"replicaSetID"`
+			ReplicaSetID3 string `json:"replicasetid"`
 		} `json:"mongo"`
 	}
 	if err := json.Unmarshal([]byte(reason), &note); err == nil {
-		if note.Mongo.State != 0 || note.Mongo.StateStr != "" {
-			return note.Mongo.State, note.Mongo.StateStr, true
+		rsid := note.Mongo.ReplicaSetID
+		if rsid == "" {
+			rsid = note.Mongo.ReplicaSetID2
+		}
+		if rsid == "" {
+			rsid = note.Mongo.ReplicaSetID3
+		}
+		if note.Mongo.State != 0 || note.Mongo.StateStr != "" || rsid != "" {
+			return note.Mongo.State, note.Mongo.StateStr, rsid, true
 		}
 	}
 	upper := strings.ToUpper(reason)
 	switch {
 	case strings.Contains(upper, "PRIMARY"):
-		return 1, "PRIMARY", true
+		return 1, "PRIMARY", "", true
 	case strings.Contains(upper, "SECONDARY"):
-		return 2, "SECONDARY", true
+		return 2, "SECONDARY", "", true
 	case strings.Contains(upper, "ARBITER"):
-		return 7, "ARBITER", true
+		return 7, "ARBITER", "", true
 	case strings.Contains(upper, "REMOVED"):
-		return 10, "REMOVED", true
+		return 10, "REMOVED", "", true
 	}
-	return 0, "", false
+	return 0, "", "", false
 }
 
 func isNotWritablePrimary(err error) bool {
