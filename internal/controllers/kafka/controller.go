@@ -2,6 +2,8 @@ package kafka
 
 import (
 	"context"
+	"crypto/rand"
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -140,16 +142,8 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			}
 			return nil
 		}).
-		Ignore(TrCandidates, func(context.Context, ...any) bool {
-			// Ignore candidate updates unless degraded single-member path is allowed and applicable.
-			return !(c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1))
-		}).
-		Ignore(TrTimer, func(context.Context, ...any) bool {
-			// Ignore timer ticks only when neither publish nor degraded conditions apply.
-			canPublish := c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
-			canDegrade := c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1)
-			return !(canPublish || canDegrade)
-		}).
+		Ignore(TrCandidates).
+		Ignore(TrTimer).
 		Permit(TrTimer, StPublish, func(context.Context, ...any) bool {
 			return c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
 		}).
@@ -230,6 +224,7 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 }
 
 func (c *Controller) maybeStartOrExtendInitialWindow(now time.Time) {
+	log.Println("traying init window")
 	if c.initialDeadline.IsZero() {
 		c.initialDeadline = now.Add(c.cfg.InitialSettleDuration)
 		log.Printf("[kafka] initial settle window started: %s", c.initialDeadline.Format(time.RFC3339))
@@ -248,7 +243,8 @@ func (c *Controller) initialWindowElapsed(now time.Time) bool {
 func (c *Controller) eligibleCandidates() []types.CandidateReport {
 	out := make([]types.CandidateReport, 0, len(c.candidates))
 	for _, r := range c.candidates {
-		if r.Eligible {
+		// For Kafka we must have controller endpoint + node id to safely manage the quorum.
+		if r.Eligible && r.KafkaControllerAddr != "" && r.KafkaNodeID != "" {
 			out = append(out, r)
 		}
 	}
@@ -275,6 +271,18 @@ func (c *Controller) loadSpec(ctx context.Context) error {
 
 func (c *Controller) publishSpec(ctx context.Context, want int) {
 	eligible := c.eligibleCandidates()
+
+	// Decide Kafka cluster.id for formatting:
+	// - If we already have a spec with a cluster id, keep it.
+	// - Else, if some candidates were previously formatted, reuse their cluster.id (prefer the most common one).
+	// - Else generate a new cluster id and keep it for future reconciliations.
+	clusterID := c.spec.KafkaClusterID
+	if clusterID == "" {
+		clusterID = mostCommonNonEmpty(eligible, func(cr types.CandidateReport) string { return cr.KafkaClusterID })
+	}
+	if clusterID == "" {
+		clusterID = newUUID()
+	}
 	if len(eligible) < want {
 		want = len(eligible)
 	}
@@ -303,6 +311,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		KafkaMode:             "combined",
 		KafkaDynamicVoter:     true,
 		KafkaBootstrapServers: bootstrap,
+		KafkaClusterID:        clusterID,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
@@ -406,6 +415,15 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	members := append([]string{}, c.spec.Members...)
 	members[failedIdx] = replacement
 
+	// Keep the current cluster id for all future specs (must remain stable).
+	clusterID := c.spec.KafkaClusterID
+	if clusterID == "" {
+		clusterID = mostCommonNonEmpty(eligible, func(cr types.CandidateReport) string { return cr.KafkaClusterID })
+		if clusterID == "" {
+			clusterID = newUUID()
+		}
+	}
+
 	c.specVersion++
 	bootstrap := make([]string, 0, len(members))
 	// Build controller.quorum.bootstrap.servers from selected candidates controller addresses
@@ -427,6 +445,7 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		KafkaMode:             "combined",
 		KafkaDynamicVoter:     true,
 		KafkaBootstrapServers: bootstrap,
+		KafkaClusterID:        clusterID,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
@@ -434,4 +453,34 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		_ = c.provider.PublishSpec(ctx, spec)
 	}
 	return true
+}
+
+func newUUID() string {
+	// Best-effort UUID generator without extra deps.
+	// Format: 8-4-4-4-12 hex.
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	// version 4
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	hex := fmt.Sprintf("%x", b)
+	return fmt.Sprintf("%s-%s-%s-%s-%s", hex[0:8], hex[8:12], hex[12:16], hex[16:20], hex[20:32])
+}
+
+func mostCommonNonEmpty[T any](arr []T, f func(T) string) string {
+	counts := map[string]int{}
+	best := ""
+	bestN := 0
+	for _, x := range arr {
+		v := f(x)
+		if v == "" {
+			continue
+		}
+		counts[v]++
+		if counts[v] > bestN {
+			bestN = counts[v]
+			best = v
+		}
+	}
+	return best
 }

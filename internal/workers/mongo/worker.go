@@ -69,5 +69,5 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		}(),
 		UpdatedAt: time.Now(),
 	}
-	return w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, &rep)
+	return w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, w.cfg.Host, &rep)
 }

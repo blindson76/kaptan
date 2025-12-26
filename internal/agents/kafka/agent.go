@@ -39,18 +39,29 @@ type Config struct {
 }
 
 type Agent struct {
-	cfg  Config
-	kv   store.KV
-	reg  servicereg.Registry
-	proc *os.Process
-	logF *os.File
+	cfg     Config
+	kv      store.KV
+	reg     servicereg.Registry
+	proc    *os.Process
+	pidFile string
 
 	opMu sync.Mutex
 	op   map[string]any
 }
 
+type StartOptions struct {
+	BootstrapControllers []string
+	ClusterID            string
+	NoInitialControllers bool
+	InitialControllers   []string // ["id@endpoint", ...] (seed only)
+}
+
 func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
-	return &Agent{cfg: cfg, kv: kv, reg: reg}
+	a := &Agent{cfg: cfg, kv: kv, reg: reg}
+	if cfg.WorkDir != "" {
+		a.pidFile = filepath.Join(cfg.WorkDir, "kafka.pid")
+	}
+	return a
 }
 
 func (a *Agent) Run(ctx context.Context) error {
@@ -100,7 +111,21 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 				bss = append(bss, s)
 			}
 		}
-		err = a.startKafka(ctx, bss)
+		clusterID, _ := ord.Payload["clusterId"].(string)
+		noInit, _ := ord.Payload["noInitialControllers"].(bool)
+		initAny, _ := ord.Payload["initialControllers"].([]any)
+		inits := make([]string, 0, len(initAny))
+		for _, x := range initAny {
+			if s, ok := x.(string); ok && s != "" {
+				inits = append(inits, s)
+			}
+		}
+		err = a.startKafka(ctx, StartOptions{
+			BootstrapControllers: bss,
+			ClusterID:            clusterID,
+			NoInitialControllers: noInit,
+			InitialControllers:   inits,
+		})
 	case orders.ActionStop:
 		err = a.stopKafka()
 	case orders.ActionAddVoter:
@@ -127,94 +152,142 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
 }
 
-func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string) error {
-	baseDir := a.cfg.WorkDir
-	if baseDir == "" {
-		baseDir = os.TempDir()
+func (a *Agent) startKafka(ctx context.Context, opt StartOptions) error {
+	// Idempotency: if kafka is already running (from a previous agent instance), don't start a second copy.
+	if a.isKafkaRunning() {
+		log.Printf("[kafka-agent] kafka already running; skipping start")
+		return nil
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+
+	propsPath := filepath.Join(a.cfg.WorkDir, "server.properties")
+	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
 		return err
 	}
-	// Stable runtime dir so server.properties path remains consistent between starts.
-	runtimeDir := filepath.Join(baseDir, "kafka_runtime")
-	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
-		return err
-	}
-	nodeID := a.cfg.NodeID
-	if nodeID == "" {
-		nodeID = "1"
-	}
-	if a.cfg.LogDir == "" || a.cfg.MetaLogDir == "" {
-		return fmt.Errorf("log_dir and meta_log_dir are required")
-	}
-	if err := os.MkdirAll(a.cfg.LogDir, 0o755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(a.cfg.MetaLogDir, 0o755); err != nil {
-		return err
-	}
-	propsPath := filepath.Join(runtimeDir, fmt.Sprintf("server-%s.properties", nodeID))
-	props := a.renderProperties(bootstrapControllers)
+	props := a.renderProperties(opt)
 	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		return err
 	}
-	log.Printf("[kafka-agent] generated server.properties at %s:\n%s", propsPath, props)
 
-	if a.cfg.ClusterID != "" {
+	// Format storage when needed.
+	// IMPORTANT: For a brand-new dynamic-quorum KRaft cluster, at least one seed node must be formatted
+	// with --initial-controllers; otherwise everyone starts as a non-voter and the cluster never forms.
+	clusterID := opt.ClusterID
+	if clusterID == "" {
+		clusterID = a.cfg.ClusterID
+	}
+	if clusterID != "" && a.shouldFormatStorage() {
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
-		args := []string{"format", "--config", propsPath, "--cluster-id", a.cfg.ClusterID, "--ignore-formatted"}
-		metaProps := filepath.Join(a.cfg.MetaLogDir, "meta.properties")
-		if _, err := os.Stat(metaProps); os.IsNotExist(err) {
-			log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
-			if out, err := exec.CommandContext(ctx, fmtCmd, args...).CombinedOutput(); err != nil {
-				log.Printf("[kafka-agent] storage format failed: %v\n%s", err, string(out))
-				return err
-			}
-			if _, err := os.Stat(metaProps); err != nil {
-				return fmt.Errorf("storage format completed but %s not found: %w", metaProps, err)
-			}
+		args := []string{"format", "--ignore-formatted", "-t", clusterID, "-c", propsPath}
+		if opt.NoInitialControllers {
+			args = append(args, "--no-initial-controllers")
+		} else if len(opt.InitialControllers) > 0 {
+			args = append(args, "--initial-controllers", strings.Join(opt.InitialControllers, ","))
 		} else {
-			log.Printf("[kafka-agent] metadata already formatted at %s, skipping format", metaProps)
+			args = append(args, "--no-initial-controllers")
 		}
+		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
+		cmd := exec.CommandContext(ctx, fmtCmd, args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		_ = cmd.Run()
 	}
 
 	startCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-server-start.bat")
 	log.Printf("[kafka-agent] start %s %s", startCmd, propsPath)
 	cmd := exec.CommandContext(ctx, startCmd, propsPath)
-	logPath := filepath.Join(runtimeDir, fmt.Sprintf("kafka-server-%s.log", nodeID))
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		return err
-	}
-	a.logF = f
-	cmd.Stdout = f
-	cmd.Stderr = f
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	a.proc = cmd.Process
-	log.Printf("[kafka-agent] started kafka pid=%d (log=%s)", cmd.Process.Pid, logPath)
+	_ = a.writePid(cmd.Process.Pid)
+	log.Printf("[kafka-agent] started kafka pid=%d", cmd.Process.Pid)
 	return nil
 }
 
 func (a *Agent) stopKafka() error {
-	if a.proc == nil {
+	pid := 0
+	if a.proc != nil {
+		pid = a.proc.Pid
+	}
+	if pid == 0 {
+		pid = a.readPid()
+	}
+	if pid == 0 {
 		return nil
 	}
-	pid := a.proc.Pid
 	_ = exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T").Run()
 	time.Sleep(2 * time.Second)
 	_ = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid), "/T").Run()
 	a.proc = nil
-	if a.logF != nil {
-		_ = a.logF.Close()
-		a.logF = nil
-	}
+	_ = a.clearPid()
 	return nil
 }
 
-func (a *Agent) renderProperties(bootstrapControllers []string) string {
-	bs := strings.Join(bootstrapControllers, ",")
+func (a *Agent) shouldFormatStorage() bool {
+	// Heuristic: if metadata dir doesn't exist or doesn't contain the cluster metadata topic, storage isn't formatted.
+	if a.cfg.MetaLogDir == "" {
+		return false
+	}
+	if st, err := os.Stat(a.cfg.MetaLogDir); err != nil || !st.IsDir() {
+		return true
+	}
+	// common path: <meta>/__cluster_metadata-0
+	if _, err := os.Stat(filepath.Join(a.cfg.MetaLogDir, "__cluster_metadata-0")); err == nil {
+		return false
+	}
+	return true
+}
+
+func (a *Agent) isKafkaRunning() bool {
+	pid := 0
+	if a.proc != nil {
+		pid = a.proc.Pid
+	}
+	if pid == 0 {
+		pid = a.readPid()
+	}
+	if pid == 0 {
+		return false
+	}
+	// On Windows, sending signal 0 isn't portable; best-effort via tasklist.
+	out, err := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid)).CombinedOutput()
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), strconv.Itoa(pid))
+}
+
+func (a *Agent) writePid(pid int) error {
+	if a.pidFile == "" {
+		return nil
+	}
+	_ = os.MkdirAll(filepath.Dir(a.pidFile), 0o755)
+	return os.WriteFile(a.pidFile, []byte(strconv.Itoa(pid)), 0o644)
+}
+
+func (a *Agent) readPid() int {
+	if a.pidFile == "" {
+		return 0
+	}
+	b, err := os.ReadFile(a.pidFile)
+	if err != nil {
+		return 0
+	}
+	p, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return p
+}
+
+func (a *Agent) clearPid() error {
+	if a.pidFile == "" {
+		return nil
+	}
+	return os.Remove(a.pidFile)
+}
+
+func (a *Agent) renderProperties(opt StartOptions) string {
+	bs := strings.Join(opt.BootstrapControllers, ",")
 	if bs == "" && a.cfg.ControllerAddr != "" {
 		bs = a.cfg.ControllerAddr
 	}
@@ -222,8 +295,11 @@ func (a *Agent) renderProperties(bootstrapControllers []string) string {
 	if nodeID == "" {
 		nodeID = "1"
 	}
-	logDir := filepath.ToSlash(a.cfg.LogDir)
-	metaLogDir := filepath.ToSlash(a.cfg.MetaLogDir)
+	votersLine := ""
+	if !opt.NoInitialControllers && len(opt.InitialControllers) > 0 {
+		votersLine = "controller.quorum.voters=" + strings.Join(opt.InitialControllers, ",")
+	}
+
 	return fmt.Sprintf(`node.id=%s
 process.roles=broker,controller
 
@@ -234,10 +310,10 @@ controller.listener.names=CONTROLLER
 listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
 
 controller.quorum.bootstrap.servers=%s
-
+%s
 log.dirs=%s
 metadata.log.dir=%s
-`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, logDir, metaLogDir)
+`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, votersLine, a.cfg.LogDir, a.cfg.MetaLogDir)
 }
 
 func waitTCP(addr string, timeout time.Duration) error {

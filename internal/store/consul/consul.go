@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"path"
 	"reflect"
 	"sort"
@@ -18,10 +19,9 @@ import (
 type Store struct {
 	c      *capi.Client
 	prefix string
-	node   string
 }
 
-func New(address, datacenter, token, prefix, node string) (*Store, error) {
+func New(address, datacenter, token, prefix string) (*Store, error) {
 	cfg := capi.DefaultConfig()
 	cfg.Address = address
 	if datacenter != "" {
@@ -37,7 +37,7 @@ func New(address, datacenter, token, prefix, node string) (*Store, error) {
 	if prefix == "" {
 		prefix = "replctl/v1"
 	}
-	return &Store{c: cli, prefix: prefix, node: node}, nil
+	return &Store{c: cli, prefix: prefix}, nil
 }
 
 func (s *Store) key(k string) string {
@@ -57,7 +57,7 @@ func (s *Store) PutJSON(ctx context.Context, key string, v any) error {
 	return err
 }
 
-func (s *Store) PutJSONEphemeral(ctx context.Context, key string, owner string, v any) error {
+func (s *Store) PutJSONEphemeral(ctx context.Context, key string, owner string, node string, v any) error {
 	if owner == "" {
 		owner = key
 	}
@@ -66,18 +66,15 @@ func (s *Store) PutJSONEphemeral(ctx context.Context, key string, owner string, 
 		return err
 	}
 
-	// Avoid default serfHealth check; TTL renewals provide liveness.
-	sessEntry := &capi.SessionEntry{
+	sess, _, err := s.c.Session().Create(&capi.SessionEntry{
 		Name:      owner,
+		Node:      node,
 		Behavior:  capi.SessionBehaviorDelete,
 		TTL:       "10s",
 		LockDelay: 0,
-	}
-	if s.node != "" {
-		sessEntry.Node = s.node
-	}
-	sess, _, err := s.c.Session().CreateNoChecks(sessEntry, nil)
+	}, nil)
 	if err != nil {
+		log.Printf("failed to create session: %v", err)
 		return err
 	}
 
@@ -183,7 +180,7 @@ func (s *Store) WatchPrefixJSON(ctx context.Context, prefix string, outSlicePtrF
 
 			pairs, meta, err := s.c.KV().List(s.key(prefix), &capi.QueryOptions{
 				WaitIndex: lastIndex,
-				WaitTime:  5 * time.Second,
+				WaitTime:  5 * time.Minute,
 			})
 			if err != nil {
 				time.Sleep(1 * time.Second)

@@ -80,20 +80,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		Reason:              reason,
 		UpdatedAt:           time.Now(),
 	}
-	// Keep retrying until success or context cancellation; Consul may reject requests until node is fully registered.
-	for {
-		if err := w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, &rep); err != nil {
-			log.Printf("[kafka-worker] PutJSONEphemeral error: %v (will retry)", err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(2 * time.Second):
-			}
-			continue
-		}
-		log.Printf("[kafka-worker] reported candidate under %s", w.cfg.ReportKey)
-		return nil
-	}
+	return w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, w.cfg.Host, &rep)
 }
 
 func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {

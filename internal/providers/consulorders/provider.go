@@ -24,6 +24,7 @@ type Provider struct {
 	MongoHealthPrefix     string
 	KafkaOrdersPrefix     string
 	KafkaAckPrefix        string
+	KafkaHealthPrefix     string
 
 	KafkaCandidatesPrefix string
 
@@ -227,12 +228,16 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	if p.KafkaCandidatesPrefix == "" {
 		p.KafkaCandidatesPrefix = "candidates/kafka"
 	}
+	if p.KafkaHealthPrefix == "" {
+		p.KafkaHealthPrefix = "health/kafka"
+	}
 
 	var old types.ReplicaSpec
 	_, _ = p.KV.GetJSON(ctx, p.KafkaLastAppliedKey, &old)
 
 	var candidates []types.CandidateReport
 	_ = p.KV.ListJSON(ctx, p.KafkaCandidatesPrefix, &candidates)
+	healthByID := loadHealthByID(ctx, p.KV, p.KafkaHealthPrefix)
 
 	ctrlAddrByID := map[string]string{}
 	nodeIDByID := map[string]string{}
@@ -250,80 +255,146 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	added, removed := diffMembers(old.Members, spec.Members)
 
-	coordinatorID := ""
-	bootstrap := ""
+	// Bootstrap detection: if we had no previously applied kafka spec, and we're publishing the first spec with a cluster id,
+	// we must format at least one seed node WITH initial controllers (otherwise a dynamic-quorum cluster cannot start).
+	isBootstrap := len(old.Members) == 0 && old.KafkaClusterID == "" && spec.KafkaClusterID != ""
+	seedID := ""
 	if len(spec.Members) > 0 {
+		seedID = spec.Members[0]
+	}
+
+	// Pick a coordinator/bootstrapping node that is most likely reachable.
+	coordinatorID := ""
+	for _, id := range spec.Members {
+		if h, ok := healthByID[id]; ok && h.Healthy && ctrlAddrByID[id] != "" {
+			coordinatorID = id
+			break
+		}
+	}
+	if coordinatorID == "" && len(spec.Members) > 0 {
 		coordinatorID = spec.Members[0]
+	}
+	bootstrap := ""
+	if coordinatorID != "" {
 		bootstrap = ctrlAddrByID[coordinatorID]
+	}
+	if bootstrap == "" {
+		// fall back to any healthy member
+		for _, id := range spec.Members {
+			if h, ok := healthByID[id]; ok && h.Healthy && ctrlAddrByID[id] != "" {
+				bootstrap = ctrlAddrByID[id]
+				break
+			}
+		}
 	}
 	if bootstrap == "" && len(spec.KafkaBootstrapServers) > 0 {
 		bootstrap = spec.KafkaBootstrapServers[0]
 	}
 
-	// remove voters first
-	stopTasks := make([]orderTask, 0, len(removed))
-	for _, id := range removed {
-		voterID := nodeIDByID[id]
-		if voterID != "" && coordinatorID != "" && bootstrap != "" {
-			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionRemoveVoter, epoch, map[string]any{
-				"bootstrapServer": bootstrap,
-				"voterId":         voterID,
-			})
-		}
-		id := id
-		stopTasks = append(stopTasks, func(ctx context.Context) error {
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStop, epoch, nil)
-		})
-	}
-	runParallelBestEffort(ctx, stopTasks)
-
-	// start added members
+	// 1) Start added members first (do not shrink quorum before a replacement is online).
 	startTasks := make([]orderTask, 0, len(added))
 	for _, id := range added {
 		id := id
 		startTasks = append(startTasks, func(ctx context.Context) error {
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers": spec.KafkaBootstrapServers,
+			return p.issueAndWaitRetry(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+				"bootstrapServers":     spec.KafkaBootstrapServers,
+				"clusterId":            spec.KafkaClusterID,
+				"noInitialControllers": !(isBootstrap && id == seedID),
+				"initialControllers": func() []string {
+					if !(isBootstrap && id == seedID) {
+						return nil
+					}
+					nid := nodeIDByID[id]
+					endpoint := ctrlAddrByID[id]
+					if nid == "" || endpoint == "" {
+						return nil
+					}
+					return []string{nid + "@" + endpoint}
+				}(),
 			})
 		})
 	}
-	runParallelBestEffort(ctx, startTasks)
+	if err := runParallel(ctx, startTasks); err != nil {
+		return err
+	}
 
-	// add voters
+	// 2) Add voters (best effort; we retry because quorum tooling can be flaky right after start).
 	for _, id := range added {
 		voterID := nodeIDByID[id]
 		endpoint := ctrlAddrByID[id]
 		if voterID == "" || endpoint == "" || coordinatorID == "" || bootstrap == "" {
 			continue
 		}
-		_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionAddVoter, epoch, map[string]any{
+		_ = p.issueAndWaitRetry(ctx, orders.KindKafka, coordinatorID, orders.ActionAddVoter, epoch, map[string]any{
 			"bootstrapServer": bootstrap,
 			"voterId":         voterID,
 			"voterEndpoint":   endpoint,
 		})
 	}
 
-	// rebalance partitions
+	// 3) Remove voters then stop removed nodes (best-effort stop; but don't silently ignore timeouts).
+	for _, id := range removed {
+		voterID := nodeIDByID[id]
+		if voterID != "" && coordinatorID != "" && bootstrap != "" {
+			_ = p.issueAndWaitRetry(ctx, orders.KindKafka, coordinatorID, orders.ActionRemoveVoter, epoch, map[string]any{
+				"bootstrapServer": bootstrap,
+				"voterId":         voterID,
+			})
+		}
+		_ = p.issueAndWaitRetry(ctx, orders.KindKafka, id, orders.ActionStop, epoch, nil)
+	}
+
+	// 4) Rebalance partitions after membership changes.
 	if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
-		_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
+		_ = p.issueAndWaitRetry(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
 			"bootstrapServer": bootstrap,
 		})
 	}
 
-	// ensure started
+	// 5) Ensure started for members that appear unhealthy (avoid needless restarts on healthy nodes).
 	ensureTasks := make([]orderTask, 0, len(spec.Members))
 	for _, id := range spec.Members {
 		id := id
+		if h, ok := healthByID[id]; ok && h.Healthy {
+			continue
+		}
 		ensureTasks = append(ensureTasks, func(ctx context.Context) error {
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers": spec.KafkaBootstrapServers,
+			return p.issueAndWaitRetry(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+				"bootstrapServers":     spec.KafkaBootstrapServers,
+				"clusterId":            spec.KafkaClusterID,
+				"noInitialControllers": !(isBootstrap && id == seedID),
+				"initialControllers": func() []string {
+					if !(isBootstrap && id == seedID) {
+						return nil
+					}
+					nid := nodeIDByID[id]
+					endpoint := ctrlAddrByID[id]
+					if nid == "" || endpoint == "" {
+						return nil
+					}
+					return []string{nid + "@" + endpoint}
+				}(),
 			})
 		})
 	}
-	runParallelBestEffort(ctx, ensureTasks)
+	_ = runParallelBestEffortWithErrors(ctx, ensureTasks)
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)
 	return nil
+}
+
+// runParallelBestEffortWithErrors runs tasks best-effort but returns a joined error (or nil).
+// It's used for non-critical "ensure" steps where we still want visibility into failures.
+func runParallelBestEffortWithErrors(ctx context.Context, tasks []orderTask) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	var g errgroup.Group
+	for _, task := range tasks {
+		task := task
+		g.Go(func() error { return task(ctx) })
+	}
+	return g.Wait()
 }
 
 func diffMembers(old, neu []string) (added []string, removed []string) {
@@ -394,7 +465,7 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 		return err
 	}
 
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(waitTimeoutFor(action))
 	for time.Now().Before(deadline) {
 		var ack orders.Ack
 		ok, err := p.KV.GetJSON(ctx, fmt.Sprintf("%s/%s", ap, target), &ack)
@@ -411,8 +482,43 @@ func (p Provider) issueAndWait(ctx context.Context, kind orders.Kind, target str
 		case <-time.After(1 * time.Second):
 		}
 	}
-	log.Printf("[orders] ack timeout kind=%s target=%s action=%s epoch=%d", kind, target, action, epoch)
-	return nil
+	return fmt.Errorf("ack timeout kind=%s target=%s action=%s epoch=%d", kind, target, action, epoch)
+}
+
+func (p Provider) issueAndWaitRetry(ctx context.Context, kind orders.Kind, target string, action orders.Action, epoch int64, payload map[string]any) error {
+	// Small retry loop for transient failures (quorum tooling + slow startups on Windows).
+	// We *don't* retry forever because the controller loop will re-apply the desired spec anyway.
+	var lastErr error
+	backoff := 2 * time.Second
+	for attempt := 0; attempt < 3; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		err := p.issueAndWait(ctx, kind, target, action, epoch, payload)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		log.Printf("[orders] retryable failure kind=%s target=%s action=%s epoch=%d attempt=%d err=%v", kind, target, action, epoch, attempt, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return lastErr
+}
+
+func waitTimeoutFor(action orders.Action) time.Duration {
+	switch action {
+	case orders.ActionStart:
+		return 3 * time.Minute
+	case orders.ActionReassignPartitions:
+		return 15 * time.Minute
+	default:
+		return 90 * time.Second
+	}
 }
 
 func (p Provider) issue(ctx context.Context, kind orders.Kind, target string, action orders.Action, epoch int64, payload map[string]any) error {

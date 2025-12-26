@@ -12,11 +12,10 @@ import (
 type Lock struct {
     c      *capi.Client
     prefix string
-    node   string
 }
 
 func (s *Store) Locker() *Lock {
-    return &Lock{c: s.c, prefix: s.prefix, node: s.node}
+    return &Lock{c: s.c, prefix: s.prefix}
 }
 
 func (l *Lock) key(k string) string {
@@ -29,17 +28,12 @@ func (l *Lock) key(k string) string {
 // Acquire uses a Consul session + KV Acquire (ephemeral lock).
 // It automatically renews the session until ctx is cancelled or release() is called.
 func (l *Lock) Acquire(ctx context.Context, key string, owner string) (func() error, error) {
-    // Avoid default serfHealth check; TTL renewals provide liveness.
-    sessEntry := &capi.SessionEntry{
+    sess, _, err := l.c.Session().Create(&capi.SessionEntry{
         Name:      owner,
         Behavior:  capi.SessionBehaviorDelete,
         TTL:       "10s",
         LockDelay: 0,
-    }
-    if l.node != "" {
-        sessEntry.Node = l.node
-    }
-    sess, _, err := l.c.Session().CreateNoChecks(sessEntry, nil)
+    }, nil)
     if err != nil {
         return nil, err
     }
