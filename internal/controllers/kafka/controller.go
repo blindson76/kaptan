@@ -140,8 +140,16 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			}
 			return nil
 		}).
-		Ignore(TrCandidates).
-		Ignore(TrTimer).
+		Ignore(TrCandidates, func(context.Context, ...any) bool {
+			// Ignore candidate updates unless degraded single-member path is allowed and applicable.
+			return !(c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1))
+		}).
+		Ignore(TrTimer, func(context.Context, ...any) bool {
+			// Ignore timer ticks only when neither publish nor degraded conditions apply.
+			canPublish := c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
+			canDegrade := c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1)
+			return !(canPublish || canDegrade)
+		}).
 		Permit(TrTimer, StPublish, func(context.Context, ...any) bool {
 			return c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
 		}).

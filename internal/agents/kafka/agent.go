@@ -43,6 +43,7 @@ type Agent struct {
 	kv   store.KV
 	reg  servicereg.Registry
 	proc *os.Process
+	logF *os.File
 
 	opMu sync.Mutex
 	op   map[string]any
@@ -127,35 +128,72 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 }
 
 func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string) error {
-	propsPath := filepath.Join(a.cfg.WorkDir, "server.properties")
-	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
+	baseDir := a.cfg.WorkDir
+	if baseDir == "" {
+		baseDir = os.TempDir()
+	}
+	if err := os.MkdirAll(baseDir, 0o755); err != nil {
 		return err
 	}
+	// Stable runtime dir so server.properties path remains consistent between starts.
+	runtimeDir := filepath.Join(baseDir, "kafka_runtime")
+	if err := os.MkdirAll(runtimeDir, 0o755); err != nil {
+		return err
+	}
+	nodeID := a.cfg.NodeID
+	if nodeID == "" {
+		nodeID = "1"
+	}
+	if a.cfg.LogDir == "" || a.cfg.MetaLogDir == "" {
+		return fmt.Errorf("log_dir and meta_log_dir are required")
+	}
+	if err := os.MkdirAll(a.cfg.LogDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(a.cfg.MetaLogDir, 0o755); err != nil {
+		return err
+	}
+	propsPath := filepath.Join(runtimeDir, fmt.Sprintf("server-%s.properties", nodeID))
 	props := a.renderProperties(bootstrapControllers)
 	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		return err
 	}
+	log.Printf("[kafka-agent] generated server.properties at %s:\n%s", propsPath, props)
 
 	if a.cfg.ClusterID != "" {
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
-		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath, "--no-initial-controllers"}
-		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
-		cmd := exec.CommandContext(ctx, fmtCmd, args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		_ = cmd.Run()
+		args := []string{"format", "--config", propsPath, "--cluster-id", a.cfg.ClusterID, "--ignore-formatted"}
+		metaProps := filepath.Join(a.cfg.MetaLogDir, "meta.properties")
+		if _, err := os.Stat(metaProps); os.IsNotExist(err) {
+			log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
+			if out, err := exec.CommandContext(ctx, fmtCmd, args...).CombinedOutput(); err != nil {
+				log.Printf("[kafka-agent] storage format failed: %v\n%s", err, string(out))
+				return err
+			}
+			if _, err := os.Stat(metaProps); err != nil {
+				return fmt.Errorf("storage format completed but %s not found: %w", metaProps, err)
+			}
+		} else {
+			log.Printf("[kafka-agent] metadata already formatted at %s, skipping format", metaProps)
+		}
 	}
 
 	startCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-server-start.bat")
 	log.Printf("[kafka-agent] start %s %s", startCmd, propsPath)
 	cmd := exec.CommandContext(ctx, startCmd, propsPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	logPath := filepath.Join(runtimeDir, fmt.Sprintf("kafka-server-%s.log", nodeID))
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	a.logF = f
+	cmd.Stdout = f
+	cmd.Stderr = f
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	a.proc = cmd.Process
-	log.Printf("[kafka-agent] started kafka pid=%d", cmd.Process.Pid)
+	log.Printf("[kafka-agent] started kafka pid=%d (log=%s)", cmd.Process.Pid, logPath)
 	return nil
 }
 
@@ -168,6 +206,10 @@ func (a *Agent) stopKafka() error {
 	time.Sleep(2 * time.Second)
 	_ = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid), "/T").Run()
 	a.proc = nil
+	if a.logF != nil {
+		_ = a.logF.Close()
+		a.logF = nil
+	}
 	return nil
 }
 
@@ -180,6 +222,8 @@ func (a *Agent) renderProperties(bootstrapControllers []string) string {
 	if nodeID == "" {
 		nodeID = "1"
 	}
+	logDir := filepath.ToSlash(a.cfg.LogDir)
+	metaLogDir := filepath.ToSlash(a.cfg.MetaLogDir)
 	return fmt.Sprintf(`node.id=%s
 process.roles=broker,controller
 
@@ -193,7 +237,7 @@ controller.quorum.bootstrap.servers=%s
 
 log.dirs=%s
 metadata.log.dir=%s
-`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, a.cfg.LogDir, a.cfg.MetaLogDir)
+`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, logDir, metaLogDir)
 }
 
 func waitTCP(addr string, timeout time.Duration) error {

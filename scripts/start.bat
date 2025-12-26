@@ -1,4 +1,5 @@
 @echo off
+taskkill /f /im java.exe
 taskkill /f /im replctl.exe
 taskkill /f /fi "WINDOWTITLE eq Node-*"
 taskkill /f /fi "WINDOWTITLE eq Node-*"

@@ -48,7 +48,7 @@ tasks:
       tags: ['mongo']
 
   kafka_controller:
-    enabled: false
+    enabled: true
     instance_number: 1
     controller_id: ''
     lock_key: 'locks/kafka-controller'
@@ -58,7 +58,7 @@ tasks:
     spec_key: 'spec/kafka'
     election_interval: '10s'
     initial_settle_duration: '15s'   # debounce window before choosing initial 3 members
-    allow_degraded_single_member: true
+    allow_degraded_single_member: false
 
   kafka_agent:
     enabled: true
@@ -68,13 +68,13 @@ tasks:
     orders_key: 'orders/kafka/${env.NODE_NAME}'
     ack_key: 'acks/kafka/${env.NODE_NAME}'
     kafka_bin_dir: '${env.KAFKA_TOOLS}'
-    work_dir: 'H:/infra/kafka'
+    work_dir: '${env.CMS_ROOT}'
     log_dir: '${env.KAFKA_DATA_DIR}'
-    meta_log_dir: '${env.KAFKA_DATA_DIR}'
+    meta_log_dir: '${env.KAFKA_META_DIR}'
     broker_addr: '${env.CSB_IP}:9092'
     controller_addr: '${env.CSB_IP}:9093'
     cluster_id: '${env.KAFKA_CLUSTER_ID}'
-    node_id: '${env.KAFKA_NODE_ID}'
+    node_id: '${env.CONSOLE_ID}'
     # meta_dirs:
     service:
       enabled: true

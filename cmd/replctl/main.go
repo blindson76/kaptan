@@ -48,7 +48,7 @@ func main() {
 	ctx, cancel := runtime.WithSignals(context.Background())
 	defer cancel()
 
-	st, err := consul.New(cfg.Consul.Address, cfg.Consul.Datacenter, cfg.Consul.Token, cfg.Consul.Prefix)
+	st, err := consul.New(cfg.Consul.Address, cfg.Consul.Datacenter, cfg.Consul.Token, cfg.Consul.Prefix, nodeName)
 	if err != nil {
 		log.Fatalf("consul init error: %v", err)
 	}
