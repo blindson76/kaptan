@@ -119,7 +119,8 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 				inits = append(inits, s)
 			}
 		}
-		err = a.startKafka(ctx, bss, inits)
+		standalone, _ := ord.Payload["standalone"].(bool)
+		err = a.startKafka(ctx, bss, inits, standalone)
 	case orders.ActionStop:
 		err = a.stopKafka()
 	case orders.ActionAddVoter:
@@ -129,8 +130,14 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 		err = a.addVoter(ctx, bs, vid, ep)
 	case orders.ActionRemoveVoter:
 		bs, _ := ord.Payload["bootstrapServer"].(string)
-		vid, _ := ord.Payload["voterId"].(string)
-		err = a.removeVoter(ctx, bs, vid)
+		cid, _ := ord.Payload["controller-id"].(string)
+		cdid, _ := ord.Payload["controller-directory-id"].(string)
+		err = a.removeVoter(ctx, bs, cid, cdid)
+	case orders.ActionRemoveController:
+		bs, _ := ord.Payload["bootstrapServer"].(string)
+		cid, _ := ord.Payload["controllerId"].(string)
+		dirID, _ := ord.Payload["controllerDirectoryId"].(string)
+		err = a.removeController(ctx, bs, cid, dirID)
 	case orders.ActionReassignPartitions:
 		bs, _ := ord.Payload["bootstrapServer"].(string)
 		err = a.reassignPartitions(ctx, bs)
@@ -146,7 +153,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
 }
 
-func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, initialControllers []string) error {
+func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, initialControllers []string, standalone bool) error {
 	nodeID := a.nodeID()
 	addrs := a.normalizeBootstrapControllers(bootstrapControllers)
 	if len(addrs) == 0 && a.cfg.ControllerAddr != "" {
@@ -157,21 +164,35 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
 		return err
 	}
+	if standalone {
+		bs := []string{}
+		for _, addr := range strings.Split(bootstrap, ",") {
+			if addr != a.cfg.ControllerAddr {
+				bs = append(bs, addr)
+			}
+		}
+		bootstrap = strings.Join(bs, ",")
+	}
 	props := a.renderProperties(bootstrap)
 	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		return err
 	}
 
 	if a.cfg.ClusterID != "" {
-		if bootstrap == "" {
-			return fmt.Errorf("controller.quorum.bootstrap.servers required for kafka-storage format")
-		}
-		initialControllersStr := strings.Join(initialControllers, ",")
-		if initialControllersStr == "" {
-			return fmt.Errorf("initial controllers required for kafka-storage format")
-		}
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
-		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath, "--initial-controllers", initialControllersStr}
+		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath}
+		if standalone {
+			args = append(args, "--standalone")
+		} else {
+			if bootstrap == "" {
+				return fmt.Errorf("controller.quorum.bootstrap.servers required for kafka-storage format")
+			}
+			initialControllersStr := strings.Join(initialControllers, ",")
+			if initialControllersStr == "" {
+				return fmt.Errorf("initial controllers required for kafka-storage format")
+			}
+			args = append(args, "--initial-controllers", initialControllersStr)
+		}
 		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, fmtCmd, args...)
 		cmd.Stdout = os.Stdout
@@ -395,9 +416,22 @@ func (a *Agent) addVoter(ctx context.Context, bootstrapServer, voterID, voterEnd
 	return cmd.Run()
 }
 
-func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, voterID string) error {
+func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, cid string, cdid string) error {
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	args := []string{"--bootstrap-controller", bootstrapServer, "remove-controller", "--controller-id", voterID}
+	args := []string{"--bootstrap-controller", bootstrapServer, "remove-controller", "--controller-id", cid, "--controller-directory-id", cdid}
+	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
+	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func (a *Agent) removeController(ctx context.Context, bootstrapController, controllerID, controllerDirID string) error {
+	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
+	args := []string{"--bootstrap-controller", bootstrapController, "remove-controller", "--controller-id", controllerID}
+	if controllerDirID != "" {
+		args = append(args, "--controller-directory-id", controllerDirID)
+	}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Stdout = os.Stdout

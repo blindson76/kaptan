@@ -89,7 +89,7 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 	}
 	replMembers := buildMembers(spec.Members)
 
-	_, removed := diffMembers(prev.Members, spec.Members)
+	_, removed, _ := diffMembers(prev.Members, spec.Members)
 
 	startTasks := make([]orderTask, 0, len(spec.Members))
 	for _, id := range spec.Members {
@@ -230,6 +230,7 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	var old types.ReplicaSpec
 	_, _ = p.KV.GetJSON(ctx, p.KafkaLastAppliedKey, &old)
+	existingCluster := len(old.Members) > 0
 
 	var candidates []types.CandidateReport
 	_ = p.KV.ListJSON(ctx, p.KafkaCandidatesPrefix, &candidates)
@@ -253,8 +254,27 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 			storageIDByID[c.ID] = c.KafkaStorageID
 		}
 	}
+	dirIDFromSpec := map[string]string{}
+	for k, v := range old.KafkaControllerDirectoryIDs {
+		if k != "" && v != "" {
+			dirIDFromSpec[k] = v
+		}
+	}
+	memberIDFromSpec := map[string]string{}
+	for k, v := range old.KafkaMemberIDs {
+		if k != "" && v != "" {
+			memberIDFromSpec[k] = v
+		}
+	}
 
-	added, removed := diffMembers(old.Members, spec.Members)
+	added, removed, surrendered := diffMembers(old.Members, spec.Members)
+	log.Printf("Diff: added:%v removed:%v surrendered:%v", added, removed, surrendered)
+	addedSet := map[string]bool{}
+	for _, id := range added {
+		if id != "" {
+			addedSet[id] = true
+		}
+	}
 
 	coordinatorID := ""
 	bootstrap := ""
@@ -266,31 +286,44 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		bootstrap = spec.KafkaBootstrapServers[0]
 	}
 
-	// Use bootstrap controllers as the source for initial-controllers to match controller.quorum.bootstrap.servers.
-	initialControllers := []string{}
-	for _, id := range added {
-		initialControllers = append(initialControllers, fmt.Sprintf("%s@%s:%s", nodeIDByID[id], ctrlAddrByID[id], storageIDByID[id]))
+	// Build initial controllers from the desired members (not just the new ones) so replacements join the existing quorum.
+	buildInitialControllers := func(ids []string) []string {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			if id == "" {
+				continue
+			}
+			node := nodeIDByID[id]
+			addr := ctrlAddrByID[id]
+			st := storageIDByID[id]
+			if st == "" {
+				st = dirIDFromSpec[id]
+			}
+			if node == "" || addr == "" || st == "" {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%s@%s:%s", node, addr, st))
+		}
+		return out
 	}
-	log.Printf("[kafka-orders] initial controllers: %v", initialControllers)
+	initialControllers := buildInitialControllers(spec.Members)
+	log.Printf("[kafka-orders] initial controllers (all members): %v", initialControllers)
 
 	// remove voters first
 	stopTasks := make([]orderTask, 0, len(removed))
 	for _, id := range removed {
-		voterID := nodeIDByID[id]
-		if voterID != "" && coordinatorID != "" && bootstrap != "" {
-			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionRemoveVoter, epoch, map[string]any{
-				"bootstrapServer": bootstrap,
-				"voterId":         voterID,
-			})
+		log.Printf("[kafka-orders] removing member %s, members:%v dirs:%v", id, memberIDFromSpec, dirIDFromSpec)
+		for _, sId := range surrendered {
+			if err := p.issueAndWait(ctx, orders.KindKafka, sId, orders.ActionRemoveVoter, epoch, map[string]any{
+				"bootstrapServer":         ctrlAddrByID[sId],
+				"controller-id":           memberIDFromSpec[id],
+				"controller-directory-id": dirIDFromSpec[id],
+			}); err == nil {
+				log.Printf("[kafka-orders] surrendered member %s removed as voter from %s", id, sId)
+				break
+			}
+
 		}
-		if !candPresent[id] {
-			log.Printf("[kafka-orders] skip stop for %s (candidate missing)", id)
-			continue
-		}
-		id := id
-		stopTasks = append(stopTasks, func(ctx context.Context) error {
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStop, epoch, nil)
-		})
 	}
 	runParallelBestEffort(ctx, stopTasks)
 
@@ -299,9 +332,15 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	for _, id := range added {
 		id := id
 		startTasks = append(startTasks, func(ctx context.Context) error {
+			standalone := existingCluster
+			inits := initialControllers
+			if standalone {
+				inits = nil
+			}
 			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
 				"bootstrapServers":   spec.KafkaBootstrapServers,
-				"initialControllers": initialControllers,
+				"initialControllers": inits,
+				"standalone":         standalone,
 			})
 		})
 	}
@@ -333,9 +372,15 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		for _, id := range spec.Members {
 			id := id
 			ensureTasks = append(ensureTasks, func(ctx context.Context) error {
+				standalone := existingCluster && addedSet[id]
+				inits := initialControllers
+				if standalone {
+					inits = nil
+				}
 				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
 					"bootstrapServers":   spec.KafkaBootstrapServers,
-					"initialControllers": initialControllers,
+					"initialControllers": inits,
+					"standalone":         standalone,
 				})
 			})
 		}
@@ -347,7 +392,7 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	return nil
 }
 
-func diffMembers(old, neu []string) (added []string, removed []string) {
+func diffMembers(old, neu []string) (added []string, removed []string, surrendered []string) {
 	o := map[string]bool{}
 	n := map[string]bool{}
 	for _, x := range old {
@@ -368,6 +413,11 @@ func diffMembers(old, neu []string) (added []string, removed []string) {
 	for x := range o {
 		if !n[x] {
 			removed = append(removed, x)
+		}
+	}
+	for x := range o {
+		if n[x] {
+			surrendered = append(surrendered, x)
 		}
 	}
 	return

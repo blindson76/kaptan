@@ -60,6 +60,9 @@ type ReplicaSpec struct {
 	KafkaMode             string   `json:"kafkaMode,omitempty"` // "combined"
 	KafkaDynamicVoter     bool     `json:"kafkaDynamicVoter,omitempty"`
 	KafkaBootstrapServers []string `json:"kafkaBootstrapServers,omitempty"` // controller.quorum.bootstrap.servers
+	// Directory IDs per controller for remove-controller operations.
+	KafkaControllerDirectoryIDs map[string]string `json:"kafkaControllerDirectoryIds,omitempty"`
+	KafkaMemberIDs              map[string]string `json:"kafkaMemberIds,omitempty"`
 }
 
 func (h HealthStatus) IsHealthy() bool  { return h.Healthy }

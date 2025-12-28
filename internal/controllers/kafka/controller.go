@@ -320,8 +320,16 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		want = len(eligible)
 	}
 	members := make([]string, 0, want)
+	dirIDs := map[string]string{}
+	memberIDs := map[string]string{}
 	for i := 0; i < want; i++ {
 		members = append(members, eligible[i].ID)
+		if eligible[i].KafkaStorageID != "" {
+			dirIDs[eligible[i].ID] = eligible[i].KafkaStorageID
+		}
+		if eligible[i].KafkaNodeID != "" {
+			memberIDs[eligible[i].ID] = eligible[i].KafkaNodeID
+		}
 	}
 	c.specVersion++
 	bootstrap := make([]string, 0, len(members))
@@ -337,13 +345,15 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 	}
 
 	spec := types.ReplicaSpec{
-		Kind:                  types.CandidateKafka,
-		Members:               members,
-		UpdatedAt:             time.Now(),
-		Version:               c.specVersion,
-		KafkaMode:             "combined",
-		KafkaDynamicVoter:     true,
-		KafkaBootstrapServers: bootstrap,
+		Kind:                        types.CandidateKafka,
+		Members:                     members,
+		UpdatedAt:                   time.Now(),
+		Version:                     c.specVersion,
+		KafkaMode:                   "combined",
+		KafkaDynamicVoter:           true,
+		KafkaBootstrapServers:       bootstrap,
+		KafkaControllerDirectoryIDs: dirIDs,
+		KafkaMemberIDs:              memberIDs,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
@@ -454,9 +464,16 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		specSet[id] = true
 	}
 	replacement := ""
+	dirIDs := map[string]string{}
+	for k, v := range c.spec.KafkaControllerDirectoryIDs {
+		dirIDs[k] = v
+	}
 	for _, cand := range eligible {
 		if !specSet[cand.ID] {
 			replacement = cand.ID
+			if cand.KafkaStorageID != "" {
+				dirIDs[cand.ID] = cand.KafkaStorageID
+			}
 			break
 		}
 	}
@@ -482,13 +499,14 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	}
 
 	spec := types.ReplicaSpec{
-		Kind:                  types.CandidateKafka,
-		Members:               members,
-		UpdatedAt:             time.Now(),
-		Version:               c.specVersion,
-		KafkaMode:             "combined",
-		KafkaDynamicVoter:     true,
-		KafkaBootstrapServers: bootstrap,
+		Kind:                        types.CandidateKafka,
+		Members:                     members,
+		UpdatedAt:                   time.Now(),
+		Version:                     c.specVersion,
+		KafkaMode:                   "combined",
+		KafkaDynamicVoter:           true,
+		KafkaBootstrapServers:       bootstrap,
+		KafkaControllerDirectoryIDs: dirIDs,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
