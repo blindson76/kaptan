@@ -143,8 +143,13 @@ func (w *Worker) cleanupDataDirs() {
 		if d == "" {
 			continue
 		}
+		log.Printf("[kafka-worker] cleanup dir %s", d)
 		if err := os.RemoveAll(d); err != nil {
 			log.Printf("[kafka-worker] failed to remove dir %s: %v", d, err)
+			continue
+		}
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			log.Printf("[kafka-worker] failed to recreate dir %s: %v", d, err)
 		}
 	}
 }

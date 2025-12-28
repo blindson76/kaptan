@@ -81,9 +81,9 @@ func main() {
 		MongoHealthPrefix:     cfg.Tasks.MongoController.HealthPrefix,
 		MongoLastAppliedKey:   "provider/mongo/last_applied_spec",
 
-		KafkaOrdersPrefix:     "orders/kafka",
-		KafkaAckPrefix:        "acks/kafka",
-		KafkaCandidatesPrefix: "candidates/kafka",
+		KafkaOrdersPrefix:     "orders/kafka/controllers",
+		KafkaAckPrefix:        "acks/kafka/controllers",
+		KafkaCandidatesPrefix: "candidates/kafka/controllers",
 		KafkaLastAppliedKey:   "provider/kafka/last_applied_spec",
 	}
 
@@ -238,19 +238,19 @@ func main() {
 			if addr == "" {
 				addr = nodeName
 			}
-			// parse port from broker addr
+			// parse port from controller addr
 			port := 0
-			if i := strings.LastIndex(cfg.Tasks.KafkaAgent.BrokerAddr, ":"); i >= 0 {
-				p, _ := strconv.Atoi(cfg.Tasks.KafkaAgent.BrokerAddr[i+1:])
+			if i := strings.LastIndex(cfg.Tasks.KafkaAgent.ControllerAddr, ":"); i >= 0 {
+				p, _ := strconv.Atoi(cfg.Tasks.KafkaAgent.ControllerAddr[i+1:])
 				port = p
 			}
 			svc = servicereg.Registration{
-				Name:    "kafka",
-				ID:      "kafka-" + cfg.Tasks.KafkaAgent.AgentID,
+				Name:    "kafka-controller",
+				ID:      "kafka-controller-" + cfg.Tasks.KafkaAgent.AgentID,
 				Address: addr,
 				Port:    port,
 				Tags:    cfg.Tasks.KafkaAgent.Service.Tags,
-				CheckID: "check:kafka-" + cfg.Tasks.KafkaAgent.AgentID,
+				CheckID: "check:kafka-controller-" + cfg.Tasks.KafkaAgent.AgentID,
 				TTL:     ttl,
 			}
 		}
