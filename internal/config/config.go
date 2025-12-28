@@ -187,6 +187,7 @@ type KafkaAgentConfig struct {
 	ControllerAddr string `yaml:"controller_addr"`
 	ClusterID      string `yaml:"cluster_id"`
 	NodeID         string `yaml:"node_id"`
+	StorageID      string `yaml:"storage_id"`
 
 	Service ServiceConfig `yaml:"service"`
 }

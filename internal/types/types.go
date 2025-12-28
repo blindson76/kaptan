@@ -28,6 +28,7 @@ type CandidateReport struct {
 	KafkaNodeID         string `json:"kafkaNodeId,omitempty"`
 	KafkaBrokerAddr     string `json:"kafkaBrokerAddr,omitempty"`
 	KafkaControllerAddr string `json:"kafkaControllerAddr,omitempty"`
+	KafkaStorageID      string `json:"kafkaStorageId,omitempty"`
 
 	Eligible bool   `json:"eligible"`
 	Reason   string `json:"reason,omitempty"`

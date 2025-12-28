@@ -34,6 +34,7 @@ type Config struct {
 
 	ClusterID string
 	NodeID    string
+	StorageID string
 
 	Service servicereg.Registration
 }
@@ -43,6 +44,8 @@ type Agent struct {
 	kv   store.KV
 	reg  servicereg.Registry
 	proc *os.Process
+	// procLog holds the log file handle for the running Kafka process.
+	procLog *os.File
 
 	opMu sync.Mutex
 	op   map[string]any
@@ -99,7 +102,14 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 				bss = append(bss, s)
 			}
 		}
-		err = a.startKafka(ctx, bss)
+		initAny, _ := ord.Payload["initialControllers"].([]any)
+		inits := make([]string, 0, len(initAny))
+		for _, x := range initAny {
+			if s, ok := x.(string); ok && s != "" {
+				inits = append(inits, s)
+			}
+		}
+		err = a.startKafka(ctx, bss, inits)
 	case orders.ActionStop:
 		err = a.stopKafka()
 	case orders.ActionAddVoter:
@@ -126,19 +136,32 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
 }
 
-func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string) error {
-	propsPath := filepath.Join(a.cfg.WorkDir, "server.properties")
+func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, initialControllers []string) error {
+	nodeID := a.nodeID()
+	addrs := a.normalizeBootstrapControllers(bootstrapControllers)
+	if len(addrs) == 0 && a.cfg.ControllerAddr != "" {
+		addrs = []string{a.cfg.ControllerAddr}
+	}
+	bootstrap := strings.Join(addrs, ",")
+	propsPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("server-%s.properties", nodeID))
 	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
 		return err
 	}
-	props := a.renderProperties(bootstrapControllers)
+	props := a.renderProperties(bootstrap)
 	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		return err
 	}
 
 	if a.cfg.ClusterID != "" {
+		if bootstrap == "" {
+			return fmt.Errorf("controller.quorum.bootstrap.servers required for kafka-storage format")
+		}
+		initialControllersStr := strings.Join(initialControllers, ",")
+		if initialControllersStr == "" {
+			return fmt.Errorf("initial controllers required for kafka-storage format")
+		}
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
-		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath, "--no-initial-controllers"}
+		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath, "--initial-controllers", initialControllersStr}
 		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, fmtCmd, args...)
 		cmd.Stdout = os.Stdout
@@ -147,14 +170,21 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string) e
 	}
 
 	startCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-server-start.bat")
-	log.Printf("[kafka-agent] start %s %s", startCmd, propsPath)
+	logPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("kafka-server-%s.log", nodeID))
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	log.Printf("[kafka-agent] start %s %s (log=%s)", startCmd, propsPath, logPath)
 	cmd := exec.CommandContext(ctx, startCmd, propsPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		return err
 	}
 	a.proc = cmd.Process
+	a.procLog = logFile
 	log.Printf("[kafka-agent] started kafka pid=%d", cmd.Process.Pid)
 	return nil
 }
@@ -168,18 +198,21 @@ func (a *Agent) stopKafka() error {
 	time.Sleep(2 * time.Second)
 	_ = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid), "/T").Run()
 	a.proc = nil
+	if a.procLog != nil {
+		_ = a.procLog.Close()
+		a.procLog = nil
+	}
 	return nil
 }
 
-func (a *Agent) renderProperties(bootstrapControllers []string) string {
-	bs := strings.Join(bootstrapControllers, ",")
+func (a *Agent) renderProperties(bootstrap string) string {
+	bs := bootstrap
 	if bs == "" && a.cfg.ControllerAddr != "" {
 		bs = a.cfg.ControllerAddr
 	}
-	nodeID := a.cfg.NodeID
-	if nodeID == "" {
-		nodeID = "1"
-	}
+	nodeID := a.nodeID()
+	logDir := escapeWindowsPath(a.cfg.LogDir)
+	metaLogDir := escapeWindowsPath(a.cfg.MetaLogDir)
 	return fmt.Sprintf(`node.id=%s
 process.roles=broker,controller
 
@@ -193,7 +226,104 @@ controller.quorum.bootstrap.servers=%s
 
 log.dirs=%s
 metadata.log.dir=%s
-`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, a.cfg.LogDir, a.cfg.MetaLogDir)
+`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, logDir, metaLogDir)
+}
+
+func (a *Agent) nodeID() string {
+	if a.cfg.NodeID == "" {
+		return "1"
+	}
+	return a.cfg.NodeID
+}
+
+func escapeWindowsPath(p string) string {
+	return strings.ReplaceAll(p, `\`, `\\`)
+}
+
+func (a *Agent) normalizeBootstrapControllers(bootstrapControllers []string) []string {
+	addrs := make([]string, 0, len(bootstrapControllers))
+	for _, addr := range bootstrapControllers {
+		addr = strings.TrimSpace(addr)
+		if addr != "" {
+			addrs = append(addrs, addr)
+		}
+	}
+	return addrs
+}
+
+func (a *Agent) buildInitialControllers(bootstrapAddrs []string, provided []string) (string, error) {
+	storageID := strings.TrimSpace(a.cfg.StorageID)
+	nodeID := strings.TrimSpace(a.cfg.NodeID)
+	broker := trimHostPort(a.cfg.BrokerAddr)
+	controller := trimHostPort(a.cfg.ControllerAddr)
+
+	source := a.normalizeBootstrapControllers(provided)
+	if len(source) == 0 {
+		source = a.normalizeBootstrapControllers(bootstrapAddrs)
+	}
+	if len(source) == 0 {
+		return "", nil
+	}
+
+	entries := make([]string, 0, len(source))
+	for i, raw := range source {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		id := ""
+		right := raw
+		if strings.Contains(raw, "@") {
+			parts := strings.SplitN(raw, "@", 2)
+			if parts[0] != "" {
+				id = strings.TrimSpace(parts[0])
+			}
+			right = parts[1]
+		}
+
+		// Ensure host:port:storage suffix.
+		if strings.Count(right, ":") < 2 {
+			if storageID == "" {
+				return "", fmt.Errorf("storage id required for initial controller %q", raw)
+			}
+			right = fmt.Sprintf("%s:%s", right, storageID)
+		}
+
+		if id == "" {
+			base := trimHostPort(right)
+			switch {
+			case nodeID != "" && (strings.EqualFold(base, controller) || strings.EqualFold(base, broker)):
+				id = nodeID
+			default:
+				id = strconv.Itoa(i + 1)
+			}
+		}
+
+		entries = append(entries, fmt.Sprintf("%s@%s", id, right))
+	}
+	if len(entries) == 0 {
+		return "", fmt.Errorf("no usable initial controllers")
+	}
+	return strings.Join(entries, ","), nil
+}
+
+func trimHostPort(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	parts := strings.Split(s, ":")
+	if len(parts) >= 2 {
+		return strings.Join(parts[:2], ":")
+	}
+	return s
+}
+
+func ensureStorageSuffix(endpoint, storageID string) string {
+	if strings.Count(endpoint, ":") < 2 {
+		return fmt.Sprintf("%s:%s", endpoint, storageID)
+	}
+	return endpoint
 }
 
 func waitTCP(addr string, timeout time.Duration) error {

@@ -73,5 +73,5 @@ func BuildExternalStorage(ctx context.Context, p *fsm.PersistedState) (get func(
 // Helper to create machine with external storage.
 func NewMachine(ctx context.Context, p *fsm.PersistedState) *stateless.StateMachine {
 	get, set := BuildExternalStorage(ctx, p)
-	return stateless.NewStateMachineWithExternalStorage(get, set, stateless.FiringImmediate)
+	return stateless.NewStateMachineWithExternalStorage(get, set, stateless.FiringQueued)
 }

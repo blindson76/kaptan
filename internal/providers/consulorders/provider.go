@@ -236,6 +236,7 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	ctrlAddrByID := map[string]string{}
 	nodeIDByID := map[string]string{}
+	storageIDByID := map[string]string{}
 	for _, c := range candidates {
 		if c.ID == "" {
 			continue
@@ -245,6 +246,9 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		}
 		if c.KafkaNodeID != "" {
 			nodeIDByID[c.ID] = c.KafkaNodeID
+		}
+		if c.KafkaStorageID != "" {
+			storageIDByID[c.ID] = c.KafkaStorageID
 		}
 	}
 
@@ -259,6 +263,13 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	if bootstrap == "" && len(spec.KafkaBootstrapServers) > 0 {
 		bootstrap = spec.KafkaBootstrapServers[0]
 	}
+
+	// Use bootstrap controllers as the source for initial-controllers to match controller.quorum.bootstrap.servers.
+	initialControllers := []string{}
+	for _, id := range added {
+		initialControllers = append(initialControllers, fmt.Sprintf("%s@%s:%s", nodeIDByID[id], ctrlAddrByID[id], storageIDByID[id]))
+	}
+	log.Printf("[kafka-orders] initial controllers: %v", initialControllers)
 
 	// remove voters first
 	stopTasks := make([]orderTask, 0, len(removed))
@@ -283,44 +294,48 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		id := id
 		startTasks = append(startTasks, func(ctx context.Context) error {
 			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers": spec.KafkaBootstrapServers,
+				"bootstrapServers":   spec.KafkaBootstrapServers,
+				"initialControllers": initialControllers,
 			})
 		})
 	}
 	runParallelBestEffort(ctx, startTasks)
 
 	// add voters
-	for _, id := range added {
-		voterID := nodeIDByID[id]
-		endpoint := ctrlAddrByID[id]
-		if voterID == "" || endpoint == "" || coordinatorID == "" || bootstrap == "" {
-			continue
-		}
-		_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionAddVoter, epoch, map[string]any{
-			"bootstrapServer": bootstrap,
-			"voterId":         voterID,
-			"voterEndpoint":   endpoint,
-		})
-	}
-
-	// rebalance partitions
-	if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
-		_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
-			"bootstrapServer": bootstrap,
-		})
-	}
-
-	// ensure started
-	ensureTasks := make([]orderTask, 0, len(spec.Members))
-	for _, id := range spec.Members {
-		id := id
-		ensureTasks = append(ensureTasks, func(ctx context.Context) error {
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers": spec.KafkaBootstrapServers,
+	if old.Members != nil {
+		for _, id := range added {
+			voterID := nodeIDByID[id]
+			endpoint := ctrlAddrByID[id]
+			if voterID == "" || endpoint == "" || coordinatorID == "" || bootstrap == "" {
+				continue
+			}
+			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionAddVoter, epoch, map[string]any{
+				"bootstrapServer": bootstrap,
+				"voterId":         voterID,
+				"voterEndpoint":   endpoint,
 			})
-		})
+		}
+		// rebalance partitions
+		if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
+			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
+				"bootstrapServer": bootstrap,
+			})
+		}
+
+		// ensure started
+		ensureTasks := make([]orderTask, 0, len(spec.Members))
+		for _, id := range spec.Members {
+			id := id
+			ensureTasks = append(ensureTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+					"bootstrapServers":   spec.KafkaBootstrapServers,
+					"initialControllers": initialControllers,
+				})
+			})
+		}
+		runParallelBestEffort(ctx, ensureTasks)
+
 	}
-	runParallelBestEffort(ctx, ensureTasks)
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)
 	return nil

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -33,23 +32,33 @@ func WithSignals(parent context.Context) (context.Context, context.CancelFunc) {
 }
 
 // WaitConsulReady polls the Consul leader endpoint until a leader is reported or the timeout/context expires.
-func WaitConsulReady(ctx context.Context, cli *capi.Client, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		if ctx.Err() != nil {
+func WaitConsulReady(ctx context.Context, c *capi.Client, timeout time.Duration) error {
+	backoff := 1 * time.Second
+	for {
+		select {
+		case <-ctx.Done():
 			return ctx.Err()
+		default:
 		}
-		if leader, err := cli.Status().Leader(); err == nil && leader != "" {
-			time.Sleep(3 * time.Second)
-			return nil
-		} else {
-			lastErr = err
+
+		leader, err := c.Status().Leader()
+		if err == nil && leader != "" {
+			// KV round-trip
+			key := "healthchecks/consulready"
+			_, err = c.KV().Put(&capi.KVPair{Key: key, Value: []byte("ok")}, nil)
+			if err == nil {
+				_, _, err = c.KV().Get(key, nil)
+			}
+			if _, err := c.Agent().Self(); err != nil {
+				log.Printf("%s consul agent self check failed: %v", logPrefix, err)
+			} else {
+				return nil
+			}
 		}
-		time.Sleep(1 * time.Second)
+
+		time.Sleep(backoff)
+		if backoff < 2*time.Second {
+			backoff *= 2
+		}
 	}
-	if lastErr != nil {
-		return fmt.Errorf("consul not ready: %w", lastErr)
-	}
-	return fmt.Errorf("consul not ready: timeout after %s", timeout)
 }

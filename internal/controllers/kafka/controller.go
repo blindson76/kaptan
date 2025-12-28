@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -86,8 +87,8 @@ func (c *Controller) runActive(ctx context.Context) error {
 	c.ps = fsm.NewPersistedState(c.kv, c.cfg.StateKey, string(StBoot))
 	c.sm = common.NewMachine(ctx, c.ps)
 	c.configure(c.sm)
-	c.sm.OnTransitioned(func(_ context.Context, t stateless.Transition) {
-		log.Printf("[kafka] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination)
+	c.sm.OnTransitioning(func(_ context.Context, t stateless.Transition) {
+		log.Printf("%s", yellowf("[kafka] state transition: %s --(%s)--> %s", t.Source, t.Trigger, t.Destination))
 	})
 
 	candCh := c.kv.WatchPrefixJSON(ctx, c.cfg.CandidatesPrefix, func() any { return &[]types.CandidateReport{} })
@@ -114,7 +115,9 @@ func (c *Controller) runActive(ctx context.Context) error {
 			if len(c.spec.Members) == 0 && c.hasEnoughEligible(3) {
 				c.maybeStartOrExtendInitialWindow(time.Now())
 			}
-			_ = c.sm.FireCtx(ctx, TrCandidates)
+			if err := c.fireCandidates(ctx); err != nil {
+				log.Printf("[kafka] Fire CANDIDATES error: %v", err)
+			}
 		case v, ok := <-healthCh:
 			if !ok {
 				return nil
@@ -122,7 +125,10 @@ func (c *Controller) runActive(ctx context.Context) error {
 			c.health = v.([]types.HealthStatus)
 			_ = c.sm.FireCtx(ctx, TrHealth)
 		case <-ticker.C:
-			_ = c.sm.FireCtx(ctx, TrTimer)
+			c.logTimerDebug()
+			if err := c.fireTimer(ctx); err != nil {
+				log.Printf("[kafka] Fire TIMER error: %v", err)
+			}
 		}
 	}
 }
@@ -140,8 +146,7 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			}
 			return nil
 		}).
-		Ignore(TrCandidates).
-		Ignore(TrTimer).
+		Ignore(TrHealth).
 		Permit(TrTimer, StPublish, func(context.Context, ...any) bool {
 			return c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
 		}).
@@ -250,6 +255,38 @@ func (c *Controller) eligibleCandidates() []types.CandidateReport {
 
 func (c *Controller) hasEnoughEligible(n int) bool { return len(c.eligibleCandidates()) >= n }
 
+func (c *Controller) fireCandidates(ctx context.Context) error {
+	state := c.ps.Get()
+	if state == string(StWaitCandidates) {
+		if c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1) {
+			return c.sm.FireCtx(ctx, TrCandidates)
+		}
+		return nil
+	}
+	return c.sm.FireCtx(ctx, TrCandidates)
+}
+
+func (c *Controller) fireTimer(ctx context.Context) error {
+	state := c.ps.Get()
+	if state == string(StWaitCandidates) {
+		publishReady := c.hasEnoughEligible(3) && c.initialWindowElapsed(time.Now())
+		degradedReady := c.cfg.AllowDegradedSingleMember && !c.hasEnoughEligible(3) && c.hasEnoughEligible(1)
+		if !publishReady && !degradedReady {
+			return nil
+		}
+	}
+	return c.sm.FireCtx(ctx, TrTimer)
+}
+
+func (c *Controller) logTimerDebug() {
+	state := c.ps.Get()
+	eligible := len(c.eligibleCandidates())
+	deadline := c.initialDeadline
+	now := time.Now()
+	log.Printf("[kafka] timer tick state=%s eligible=%d deadline=%s elapsed=%t",
+		state, eligible, deadline.Format(time.RFC3339), c.initialWindowElapsed(now))
+}
+
 func (c *Controller) loadSpec(ctx context.Context) error {
 	var s types.ReplicaSpec
 	ok, err := c.kv.GetJSON(ctx, c.cfg.SpecKey, &s)
@@ -304,6 +341,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 }
 
 func (c *Controller) specAllHealthy() bool {
+	log.Printf("[kafka-controller] check health spec:%v, health:%v", c.spec, c.health)
 	if len(c.spec.Members) == 0 {
 		return false
 	}
@@ -357,6 +395,10 @@ func countEligible(reports []types.CandidateReport) int {
 		}
 	}
 	return n
+}
+
+func yellowf(format string, args ...any) string {
+	return fmt.Sprintf("\x1b[33m"+format+"\x1b[0m", args...)
 }
 
 func (c *Controller) replaceOnce(ctx context.Context) bool {

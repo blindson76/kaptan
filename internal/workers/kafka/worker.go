@@ -18,6 +18,12 @@ type Config struct {
 	ReportKey string
 	MetaDirs  []string
 
+	NodeID     string
+	LogDir     string
+	MetaLogDir string
+
+	StorageID string
+
 	Host string
 	// For combined mode we keep both addresses (advertised listeners).
 	BrokerAddr     string
@@ -34,8 +40,9 @@ func New(cfg Config, kv store.KV) *Worker { return &Worker{cfg: cfg, kv: kv} }
 func (w *Worker) RunOnce(ctx context.Context) error {
 	log.Printf("[kafka-worker] offline status probe starting")
 
+	w.cleanupDataDirs()
+
 	clusterID := ""
-	nodeID := ""
 	eligible := false
 	reason := ""
 
@@ -51,10 +58,9 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		foundMeta = true
 		if st.ModTime().After(newest) {
 			newest = st.ModTime()
-			c, n, ok := readMetaProperties(p)
+			c, _, ok := readMetaProperties(p)
 			if ok {
 				clusterID = c
-				nodeID = n
 				eligible = true
 				reason = ""
 			} else {
@@ -73,13 +79,15 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		Kind:                types.CandidateKafka,
 		Host:                w.cfg.Host,
 		KafkaClusterID:      clusterID,
-		KafkaNodeID:         nodeID,
+		KafkaNodeID:         w.cfg.NodeID,
 		KafkaBrokerAddr:     w.cfg.BrokerAddr,
 		KafkaControllerAddr: w.cfg.ControllerAddr,
+		KafkaStorageID:      w.cfg.StorageID,
 		Eligible:            eligible,
 		Reason:              reason,
 		UpdatedAt:           time.Now(),
 	}
+	log.Printf("[kafka-worker] offline status report: %+v", rep)
 	return w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, &rep)
 }
 
@@ -111,4 +119,16 @@ func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {
 		return "", "", false
 	}
 	return clusterID, nodeID, true
+}
+
+func (w *Worker) cleanupDataDirs() {
+	paths := []string{w.cfg.LogDir, w.cfg.MetaLogDir}
+	for _, d := range paths {
+		if d == "" {
+			continue
+		}
+		if err := os.RemoveAll(d); err != nil {
+			log.Printf("[kafka-worker] failed to remove dir %s: %v", d, err)
+		}
+	}
 }

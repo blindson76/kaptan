@@ -15,10 +15,10 @@ import (
 	mongoagent "github.com/umitbozkurt/consul-replctl/internal/agents/mongo"
 	serviceagent "github.com/umitbozkurt/consul-replctl/internal/agents/service"
 	"github.com/umitbozkurt/consul-replctl/internal/config"
-	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/kafka"
 	mctl "github.com/umitbozkurt/consul-replctl/internal/controllers/mongo"
 	sctl "github.com/umitbozkurt/consul-replctl/internal/controllers/services"
+	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/providers/consulorders"
 	"github.com/umitbozkurt/consul-replctl/internal/runtime"
 	"github.com/umitbozkurt/consul-replctl/internal/servicereg"
@@ -214,6 +214,10 @@ func main() {
 				WorkerID:       cfg.Tasks.KafkaAgent.WorkerID,
 				ReportKey:      cfg.Tasks.KafkaAgent.ReportKey,
 				MetaDirs:       cfg.Tasks.KafkaAgent.MetaDirs,
+				NodeID:         cfg.Tasks.KafkaAgent.NodeID,
+				LogDir:         cfg.Tasks.KafkaAgent.LogDir,
+				MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
+				StorageID:      cfg.Tasks.KafkaAgent.StorageID,
 				Host:           nodeName,
 				BrokerAddr:     cfg.Tasks.KafkaAgent.BrokerAddr,
 				ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
@@ -258,6 +262,7 @@ func main() {
 			ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
 			ClusterID:      cfg.Tasks.KafkaAgent.ClusterID,
 			NodeID:         cfg.Tasks.KafkaAgent.NodeID,
+			StorageID:      cfg.Tasks.KafkaAgent.StorageID,
 			Service:        svc,
 		}, st, reg)
 		go func() {
