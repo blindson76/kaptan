@@ -67,6 +67,7 @@ tasks:
     report_key: 'candidates/kafka/${env.NODE_NAME}'
     orders_key: 'orders/kafka/${env.NODE_NAME}'
     ack_key: 'acks/kafka/${env.NODE_NAME}'
+    health_key: 'health/kafka/${env.NODE_NAME}'
     kafka_bin_dir: '${env.KAFKA_TOOLS}'
     work_dir: '${env.CMS_ROOT}'
     log_dir: '${env.KAFKA_DATA_DIR}'

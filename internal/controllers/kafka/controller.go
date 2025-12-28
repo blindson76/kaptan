@@ -182,8 +182,14 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			_ = c.loadSpec(ctx)
 			return nil
 		}).
-		PermitReentry(TrHealth).
-		PermitReentry(TrTimer).
+		PermitReentry(TrHealth, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.specAllHealthy()
+		}).
+		PermitReentry(TrTimer, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.specAllHealthy()
+		}).
 		Permit(TrHealth, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
 			return c.specAllHealthy()
@@ -199,9 +205,15 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			_ = c.loadSpec(ctx)
 			return nil
 		}).
-		PermitReentry(TrHealth).
+		PermitReentry(TrHealth, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.needsReplace()
+		}).
 		PermitReentry(TrCandidates).
-		PermitReentry(TrTimer).
+		PermitReentry(TrTimer, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return !c.needsReplace()
+		}).
 		Permit(TrHealth, StReconcile, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
 			return c.needsReplace()

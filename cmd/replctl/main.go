@@ -209,11 +209,15 @@ func main() {
 		if cfg.Tasks.KafkaAgent.WorkerID == "" {
 			cfg.Tasks.KafkaAgent.WorkerID = cfg.Tasks.KafkaAgent.AgentID
 		}
+		if cfg.Tasks.KafkaAgent.HealthKey == "" {
+			cfg.Tasks.KafkaAgent.HealthKey = fmt.Sprintf("health/kafka/%s", cfg.Tasks.KafkaAgent.AgentID)
+		}
 		if cfg.Tasks.KafkaAgent.ReportKey != "" {
 			w := kw.New(kw.Config{
 				WorkerID:       cfg.Tasks.KafkaAgent.WorkerID,
 				ReportKey:      cfg.Tasks.KafkaAgent.ReportKey,
 				MetaDirs:       cfg.Tasks.KafkaAgent.MetaDirs,
+				HealthKey:      cfg.Tasks.KafkaAgent.HealthKey,
 				NodeID:         cfg.Tasks.KafkaAgent.NodeID,
 				LogDir:         cfg.Tasks.KafkaAgent.LogDir,
 				MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
@@ -258,6 +262,7 @@ func main() {
 			WorkDir:        cfg.Tasks.KafkaAgent.WorkDir,
 			LogDir:         cfg.Tasks.KafkaAgent.LogDir,
 			MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
+			HealthKey:      cfg.Tasks.KafkaAgent.HealthKey,
 			BrokerAddr:     cfg.Tasks.KafkaAgent.BrokerAddr,
 			ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
 			ClusterID:      cfg.Tasks.KafkaAgent.ClusterID,

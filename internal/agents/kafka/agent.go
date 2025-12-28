@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,12 +18,14 @@ import (
 	"github.com/umitbozkurt/consul-replctl/internal/orders"
 	"github.com/umitbozkurt/consul-replctl/internal/servicereg"
 	"github.com/umitbozkurt/consul-replctl/internal/store"
+	"github.com/umitbozkurt/consul-replctl/internal/types"
 )
 
 type Config struct {
 	AgentID   string
 	OrdersKey string
 	AckKey    string
+	HealthKey string
 
 	KafkaBinDir string
 	WorkDir     string
@@ -59,10 +62,17 @@ func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[kafka-agent] starting agent_id=%s orders_key=%s ack_key=%s bin_dir=%s work_dir=%s broker_addr=%s controller_addr=%s",
 		a.cfg.AgentID, a.cfg.OrdersKey, a.cfg.AckKey, a.cfg.KafkaBinDir, a.cfg.WorkDir, a.cfg.BrokerAddr, a.cfg.ControllerAddr)
 
+	startHeartbeat := a.cfg.HealthKey != "" || (a.reg != nil && a.cfg.Service.ID != "")
 	if a.reg != nil && a.cfg.Service.ID != "" {
 		_ = a.reg.Register(ctx, a.cfg.Service)
 		defer a.reg.Deregister(context.Background(), a.cfg.Service.ID)
-		_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, a.buildServiceNote("startup"))
+		_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, a.buildServiceNote("startup", "", nil, 0))
+	}
+	if a.cfg.HealthKey != "" {
+		startNote := a.buildServiceNote("startup", "", nil, 0)
+		a.publishHealth(ctx, false, startNote, startNote)
+	}
+	if startHeartbeat {
 		go a.kafkaHeartbeat(ctx)
 	}
 
@@ -186,6 +196,8 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 	a.proc = cmd.Process
 	a.procLog = logFile
 	log.Printf("[kafka-agent] started kafka pid=%d", cmd.Process.Pid)
+	runNote := a.buildServiceNote("running", "", nil, 0)
+	a.publishHealth(ctx, true, runNote, runNote)
 	return nil
 }
 
@@ -202,6 +214,7 @@ func (a *Agent) stopKafka() error {
 		_ = a.procLog.Close()
 		a.procLog = nil
 	}
+	a.publishHealth(context.Background(), false, "stopped", "stopped")
 	return nil
 }
 
@@ -510,56 +523,63 @@ func (a *Agent) kafkaHeartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if a.reg == nil || a.cfg.Service.CheckID == "" {
-				continue
+			info := a.detectKafkaInfo(ctx)
+			role := info.role
+			noteRole := role
+			if noteRole == "" {
+				noteRole = "startup"
 			}
-			role := a.detectKafkaRole(ctx)
-			if role == "" {
-				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, a.buildServiceNote("startup"))
-			} else {
-				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusPassing, a.buildServiceNote(role))
+			note := a.buildServiceNote(noteRole, info.leaderID, info.lags, info.maxLag)
+
+			if a.reg != nil && a.cfg.Service.CheckID != "" {
+				status := servicereg.StatusWarning
+				if role != "" {
+					status = servicereg.StatusPassing
+				}
+				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, status, note)
 			}
+			healthy := role != ""
+			a.publishHealth(ctx, healthy, note, note)
 		}
 	}
 }
 
-func (a *Agent) detectKafkaRole(ctx context.Context) string {
+type kafkaInfo struct {
+	role     string
+	leaderID string
+	lags     map[string]int64
+	maxLag   int64
+}
+
+func (a *Agent) detectKafkaInfo(ctx context.Context) kafkaInfo {
 	bs := a.cfg.ControllerAddr
 	if bs == "" {
-		return ""
+		return kafkaInfo{}
 	}
 	if err := a.waitQuorumReady(ctx, bs, 10*time.Second); err != nil {
-		return ""
+		return kafkaInfo{}
 	}
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	cmd := exec.CommandContext(ctx, tool, "--bootstrap-server", bs, "describe", "--status")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "running"
-	}
-	s := string(out)
-	leader := ""
-	for _, line := range strings.Split(s, "\n") {
-		if strings.Contains(line, "LeaderId") || strings.Contains(line, "Leader ID") {
-			digits := ""
-			for _, ch := range line {
-				if ch >= '0' && ch <= '9' {
-					digits += string(ch)
-				}
-			}
-			if digits != "" {
-				leader = digits
-				break
+	statusCmd := exec.CommandContext(ctx, tool, "--bootstrap-controller", bs, "describe", "--status")
+	statusOut, statusErr := statusCmd.CombinedOutput()
+
+	replicationCmd := exec.CommandContext(ctx, tool, "--bootstrap-controller", bs, "describe", "--replication")
+	replicationOut, _ := replicationCmd.CombinedOutput()
+
+	leader := extractFirstDigits(string(statusOut))
+	role := ""
+	if statusErr == nil {
+		role = "running"
+		if leader != "" && a.cfg.NodeID != "" {
+			if leader == a.cfg.NodeID {
+				role = "controller-leader"
+			} else {
+				role = "controller-follower"
 			}
 		}
 	}
-	if leader != "" && a.cfg.NodeID != "" {
-		if leader == a.cfg.NodeID {
-			return "controller-leader"
-		}
-		return "controller-follower"
-	}
-	return "running"
+	lags, maxLag := extractReplicationLag(string(replicationOut))
+	return kafkaInfo{role: role, leaderID: leader, lags: lags, maxLag: maxLag}
 }
 
 func (a *Agent) setProgress(m map[string]any) {
@@ -585,11 +605,22 @@ func (a *Agent) getProgress() map[string]any {
 	return out
 }
 
-func (a *Agent) buildServiceNote(role string) string {
+func (a *Agent) buildServiceNote(role string, leader string, lags map[string]int64, maxLag int64) string {
 	payload := map[string]any{
 		"kafka": map[string]any{
 			"role": role,
 		},
+	}
+	if leader != "" {
+		payload["kafka"].(map[string]any)["leaderId"] = leader
+	}
+	if len(lags) > 0 {
+		payload["kafka"].(map[string]any)["lag"] = map[string]any{
+			"max":        maxLag,
+			"byFollower": lags,
+		}
+	} else if maxLag > 0 {
+		payload["kafka"].(map[string]any)["lag"] = map[string]any{"max": maxLag}
 	}
 	if p := a.getProgress(); p != nil {
 		payload["kafka"].(map[string]any)["progress"] = p
@@ -599,4 +630,76 @@ func (a *Agent) buildServiceNote(role string) string {
 		return role
 	}
 	return string(b)
+}
+
+func (a *Agent) publishHealth(ctx context.Context, healthy bool, reason string, note string) {
+	if a.cfg.HealthKey == "" {
+		return
+	}
+	meta := map[string]string{}
+	if a.cfg.Service.ID != "" {
+		meta["serviceId"] = a.cfg.Service.ID
+	}
+	if a.cfg.Service.CheckID != "" {
+		meta["checkId"] = a.cfg.Service.CheckID
+	}
+	if a.cfg.Service.Address != "" {
+		meta["address"] = a.cfg.Service.Address
+	}
+	if a.cfg.Service.Port > 0 {
+		meta["port"] = strconv.Itoa(a.cfg.Service.Port)
+	}
+	if len(a.cfg.Service.Tags) > 0 {
+		meta["tags"] = strings.Join(a.cfg.Service.Tags, ",")
+	}
+	h := types.HealthStatus{
+		ID:          a.cfg.AgentID,
+		Healthy:     healthy,
+		Reason:      reason,
+		Note:        note,
+		ServiceMeta: meta,
+		UpdatedAt:   time.Now(),
+	}
+	if err := a.kv.PutJSON(ctx, a.cfg.HealthKey, &h); err != nil {
+		log.Printf("[kafka-agent] health publish error: %v", err)
+	}
+}
+
+func extractFirstDigits(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, "LeaderId") || strings.Contains(line, "Leader ID") {
+			digits := ""
+			for _, ch := range line {
+				if ch >= '0' && ch <= '9' {
+					digits += string(ch)
+				}
+			}
+			if digits != "" {
+				return digits
+			}
+		}
+	}
+	return ""
+}
+
+func extractReplicationLag(s string) (map[string]int64, int64) {
+	lags := map[string]int64{}
+	var maxLag int64
+	// Example row:
+	// NodeId  DirectoryId             LogEndOffset    Lag     LastFetchTimestamp      LastCaughtUpTimestamp   Status
+	// 1       279THXvBR4WGfBj_y1nstQ  67              0       1766926184999           1766926184999           Leader
+	reRow := regexp.MustCompile(`^\s*([0-9]+)\s+[A-Za-z0-9_-]+\s+[0-9]+\s+([0-9]+)`)
+	for _, line := range strings.Split(s, "\n") {
+		if m := reRow.FindStringSubmatch(line); len(m) == 3 {
+			id := m[1]
+			lagVal := m[2]
+			if v, err := strconv.ParseInt(lagVal, 10, 64); err == nil {
+				lags[id] = v
+				if v > maxLag {
+					maxLag = v
+				}
+			}
+		}
+	}
+	return lags, maxLag
 }

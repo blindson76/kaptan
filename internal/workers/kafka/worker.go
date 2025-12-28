@@ -17,6 +17,7 @@ type Config struct {
 	WorkerID  string
 	ReportKey string
 	MetaDirs  []string
+	HealthKey string
 
 	NodeID     string
 	LogDir     string
@@ -88,7 +89,22 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		UpdatedAt:           time.Now(),
 	}
 	log.Printf("[kafka-worker] offline status report: %+v", rep)
-	return w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, &rep)
+	if err := w.kv.PutJSONEphemeral(ctx, w.cfg.ReportKey, w.cfg.WorkerID, &rep); err != nil {
+		return err
+	}
+	if w.cfg.HealthKey != "" {
+		h := types.HealthStatus{
+			ID:        w.cfg.WorkerID,
+			Healthy:   eligible,
+			Reason:    reason,
+			Note:      reason,
+			UpdatedAt: time.Now(),
+		}
+		if err := w.kv.PutJSON(ctx, w.cfg.HealthKey, &h); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {
