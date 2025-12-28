@@ -180,7 +180,7 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 
 	if a.cfg.ClusterID != "" {
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
-		args := []string{"format", "--ignore-formatted", "-t", a.cfg.ClusterID, "-c", propsPath}
+		args := []string{"format", "-t", a.cfg.ClusterID, "-c", propsPath}
 		if standalone {
 			args = append(args, "--standalone")
 		} else {

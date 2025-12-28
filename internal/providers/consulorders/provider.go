@@ -361,28 +361,30 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 			})
 		}
 		// rebalance partitions
-		if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
-			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
-				"bootstrapServer": bootstrap,
-			})
-		}
+		// if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
+		// 	_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
+		// 		"bootstrapServer": bootstrap,
+		// 	})
+		// }
 
-		// ensure started
 		ensureTasks := make([]orderTask, 0, len(spec.Members))
-		for _, id := range spec.Members {
-			id := id
-			ensureTasks = append(ensureTasks, func(ctx context.Context) error {
-				standalone := existingCluster && addedSet[id]
-				inits := initialControllers
-				if standalone {
-					inits = nil
-				}
-				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-					"bootstrapServers":   spec.KafkaBootstrapServers,
-					"initialControllers": inits,
-					"standalone":         standalone,
+		// ensure started
+		if !existingCluster {
+			for _, id := range spec.Members {
+				id := id
+				ensureTasks = append(ensureTasks, func(ctx context.Context) error {
+					standalone := existingCluster && addedSet[id]
+					inits := initialControllers
+					if standalone {
+						inits = nil
+					}
+					return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+						"bootstrapServers":   spec.KafkaBootstrapServers,
+						"initialControllers": inits,
+						"standalone":         standalone,
+					})
 				})
-			})
+			}
 		}
 		runParallelBestEffort(ctx, ensureTasks)
 
