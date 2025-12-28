@@ -377,9 +377,17 @@ func (c *Controller) needsReplace() bool {
 	for _, s := range c.health {
 		h[s.ID] = s.Healthy
 	}
+	candSet := map[string]bool{}
+	for _, cr := range c.candidates {
+		if cr.ID != "" {
+			candSet[cr.ID] = true
+		}
+	}
 	failedIdx := -1
 	for i, id := range c.spec.Members {
-		if ok, exists := h[id]; exists && !ok {
+		healthy, hasHealth := h[id]
+		_, present := candSet[id]
+		if !present || (hasHealth && !healthy) {
 			failedIdx = i
 			break
 		}
@@ -421,9 +429,17 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	for _, s := range c.health {
 		h[s.ID] = s.Healthy
 	}
+	candSet := map[string]bool{}
+	for _, cr := range c.candidates {
+		if cr.ID != "" {
+			candSet[cr.ID] = true
+		}
+	}
 	failedIdx := -1
 	for i, id := range c.spec.Members {
-		if ok, exists := h[id]; exists && !ok {
+		healthy, hasHealth := h[id]
+		_, present := candSet[id]
+		if !present || (hasHealth && !healthy) {
 			failedIdx = i
 			break
 		}

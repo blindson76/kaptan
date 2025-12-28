@@ -237,10 +237,12 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	ctrlAddrByID := map[string]string{}
 	nodeIDByID := map[string]string{}
 	storageIDByID := map[string]string{}
+	candPresent := map[string]bool{}
 	for _, c := range candidates {
 		if c.ID == "" {
 			continue
 		}
+		candPresent[c.ID] = true
 		if c.KafkaControllerAddr != "" {
 			ctrlAddrByID[c.ID] = c.KafkaControllerAddr
 		}
@@ -280,6 +282,10 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 				"bootstrapServer": bootstrap,
 				"voterId":         voterID,
 			})
+		}
+		if !candPresent[id] {
+			log.Printf("[kafka-orders] skip stop for %s (candidate missing)", id)
+			continue
 		}
 		id := id
 		stopTasks = append(stopTasks, func(ctx context.Context) error {

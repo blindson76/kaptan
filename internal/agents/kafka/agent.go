@@ -386,7 +386,8 @@ func (a *Agent) addVoter(ctx context.Context, bootstrapServer, voterID, voterEnd
 		return err
 	}
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	args := []string{"--bootstrap-server", bootstrapServer, "add-voter", "--voter-id", voterID, "--voter-endpoint", voterEndpoint}
+	controller := fmt.Sprintf("%s@%s", voterID, voterEndpoint)
+	args := []string{"--bootstrap-controller", bootstrapServer, "add-controller", "--controller", controller}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Stdout = os.Stdout
@@ -396,7 +397,7 @@ func (a *Agent) addVoter(ctx context.Context, bootstrapServer, voterID, voterEnd
 
 func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, voterID string) error {
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	args := []string{"--bootstrap-server", bootstrapServer, "remove-voter", "--voter-id", voterID}
+	args := []string{"--bootstrap-controller", bootstrapServer, "remove-controller", "--controller-id", voterID}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Stdout = os.Stdout
