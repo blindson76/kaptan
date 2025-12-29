@@ -773,6 +773,13 @@ func (a *Agent) publishHealth(ctx context.Context, healthy bool, reason string, 
 	if len(svc.Tags) > 0 {
 		meta["tags"] = strings.Join(svc.Tags, ",")
 	}
+	if a.reg != nil && svc.CheckID != "" {
+		status := servicereg.StatusPassing
+		if !healthy {
+			status = servicereg.StatusCritical
+		}
+		_ = a.reg.SetTTL(ctx, svc.CheckID, status, note)
+	}
 	h := types.HealthStatus{
 		ID:          a.cfg.AgentID,
 		Healthy:     healthy,
