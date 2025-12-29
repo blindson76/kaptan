@@ -66,6 +66,7 @@ func main() {
 	if err := runtime.WaitConsulReady(ctx, rawCli, 2*time.Minute); err != nil {
 		log.Fatalf("%s consul not ready: %v", logPrefix, err)
 	}
+	time.Sleep(5 * time.Second)
 	log.Printf("%s consul is ready", logPrefix)
 	locker := st.Locker()
 
@@ -212,6 +213,12 @@ func main() {
 		if cfg.Tasks.KafkaAgent.HealthKey == "" {
 			cfg.Tasks.KafkaAgent.HealthKey = fmt.Sprintf("health/kafka/%s", cfg.Tasks.KafkaAgent.AgentID)
 		}
+		if cfg.Tasks.KafkaAgent.SpecKey == "" {
+			cfg.Tasks.KafkaAgent.SpecKey = cfg.Tasks.KafkaController.SpecKey
+		}
+		if cfg.Tasks.KafkaAgent.SpecKey == "" {
+			cfg.Tasks.KafkaAgent.SpecKey = "spec/kafka"
+		}
 		if cfg.Tasks.KafkaAgent.ReportKey != "" {
 			w := kw.New(kw.Config{
 				WorkerID:       cfg.Tasks.KafkaAgent.WorkerID,
@@ -263,6 +270,7 @@ func main() {
 			LogDir:         cfg.Tasks.KafkaAgent.LogDir,
 			MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
 			HealthKey:      cfg.Tasks.KafkaAgent.HealthKey,
+			SpecKey:        cfg.Tasks.KafkaAgent.SpecKey,
 			BrokerAddr:     cfg.Tasks.KafkaAgent.BrokerAddr,
 			ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
 			ClusterID:      cfg.Tasks.KafkaAgent.ClusterID,

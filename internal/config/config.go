@@ -175,6 +175,7 @@ type KafkaAgentConfig struct {
 	OrdersKey string `yaml:"orders_key"`
 	AckKey    string `yaml:"ack_key"`
 	HealthKey string `yaml:"health_key"`
+	SpecKey   string `yaml:"spec_key"`
 
 	WorkerID  string   `yaml:"worker_id"`
 	ReportKey string   `yaml:"report_key"`

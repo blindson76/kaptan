@@ -329,66 +329,32 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	// start added members
 	startTasks := make([]orderTask, 0, len(added))
-	for _, id := range added {
+	for i, id := range added {
 		id := id
-		startTasks = append(startTasks, func(ctx context.Context) error {
-			standalone := existingCluster
-			inits := initialControllers
-			if standalone {
-				inits = nil
-			}
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+		if i == 0 && !existingCluster {
+			if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
 				"bootstrapServers":   spec.KafkaBootstrapServers,
-				"initialControllers": inits,
-				"standalone":         standalone,
-			})
-		})
+				"initialControllers": initialControllers,
+				"mode":               "standalone",
+			}); err != nil {
+				log.Printf("[kafka-orders] failed to start initial controller %s: %v", id, err)
+				return err
+			}
+
+		} else {
+
+			if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+				"bootstrapServers":   spec.KafkaBootstrapServers,
+				"initialControllers": initialControllers,
+				"mode":               "no-initial-controllers",
+			}); err != nil {
+				log.Printf("[kafka-orders] failed to start initial controller %s: %v", id, err)
+				return err
+			}
+
+		}
 	}
 	runParallelBestEffort(ctx, startTasks)
-
-	// add voters
-	if old.Members != nil {
-		for _, id := range added {
-			voterID := nodeIDByID[id]
-			endpoint := ctrlAddrByID[id]
-			if voterID == "" || endpoint == "" || coordinatorID == "" || bootstrap == "" {
-				continue
-			}
-			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionAddVoter, epoch, map[string]any{
-				"bootstrapServer": bootstrap,
-				"voterId":         voterID,
-				"voterEndpoint":   endpoint,
-			})
-		}
-		// rebalance partitions
-		// if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
-		// 	_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
-		// 		"bootstrapServer": bootstrap,
-		// 	})
-		// }
-
-		ensureTasks := make([]orderTask, 0, len(spec.Members))
-		// ensure started
-		if !existingCluster {
-			for _, id := range spec.Members {
-				id := id
-				ensureTasks = append(ensureTasks, func(ctx context.Context) error {
-					standalone := existingCluster && addedSet[id]
-					inits := initialControllers
-					if standalone {
-						inits = nil
-					}
-					return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-						"bootstrapServers":   spec.KafkaBootstrapServers,
-						"initialControllers": inits,
-						"standalone":         standalone,
-					})
-				})
-			}
-		}
-		runParallelBestEffort(ctx, ensureTasks)
-
-	}
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)
 	return nil

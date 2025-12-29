@@ -26,6 +26,7 @@ type Config struct {
 	OrdersKey string
 	AckKey    string
 	HealthKey string
+	SpecKey   string
 
 	KafkaBinDir string
 	WorkDir     string
@@ -50,24 +51,24 @@ type Agent struct {
 	// procLog holds the log file handle for the running Kafka process.
 	procLog *os.File
 
+	baseService   servicereg.Registration
+	activeService servicereg.Registration
+	activeSlot    int
+	svcMu         sync.Mutex
+
 	opMu sync.Mutex
 	op   map[string]any
 }
 
 func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
-	return &Agent{cfg: cfg, kv: kv, reg: reg}
+	return &Agent{cfg: cfg, kv: kv, reg: reg, baseService: cfg.Service}
 }
 
 func (a *Agent) Run(ctx context.Context) error {
 	log.Printf("[kafka-agent] starting agent_id=%s orders_key=%s ack_key=%s bin_dir=%s work_dir=%s broker_addr=%s controller_addr=%s",
 		a.cfg.AgentID, a.cfg.OrdersKey, a.cfg.AckKey, a.cfg.KafkaBinDir, a.cfg.WorkDir, a.cfg.BrokerAddr, a.cfg.ControllerAddr)
 
-	startHeartbeat := a.cfg.HealthKey != "" || (a.reg != nil && a.cfg.Service.ID != "")
-	if a.reg != nil && a.cfg.Service.ID != "" {
-		_ = a.reg.Register(ctx, a.cfg.Service)
-		defer a.reg.Deregister(context.Background(), a.cfg.Service.ID)
-		_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, servicereg.StatusWarning, a.buildServiceNote("startup", "", nil, 0))
-	}
+	startHeartbeat := a.cfg.HealthKey != "" || (a.reg != nil && (a.baseService.ID != "" || a.baseService.Name != ""))
 	if a.cfg.HealthKey != "" {
 		startNote := a.buildServiceNote("startup", "", nil, 0)
 		a.publishHealth(ctx, false, startNote, startNote)
@@ -76,7 +77,16 @@ func (a *Agent) Run(ctx context.Context) error {
 		go a.kafkaHeartbeat(ctx)
 	}
 
+	specKey := a.cfg.SpecKey
+	if specKey == "" {
+		specKey = "spec/kafka"
+	}
+	specCh := (<-chan any)(nil)
+	if specKey != "" {
+		specCh = a.kv.WatchPrefixJSON(ctx, specKey, func() any { return &[]types.ReplicaSpec{} })
+	}
 	ch := a.kv.WatchPrefixJSON(ctx, a.cfg.OrdersKey, func() any { return &[]orders.Order{} })
+	defer a.stopServiceRegistration()
 	for {
 		select {
 		case <-ctx.Done():
@@ -94,8 +104,90 @@ func (a *Agent) Run(ctx context.Context) error {
 				continue
 			}
 			a.execute(ctx, ord)
+		case v, ok := <-specCh:
+			if !ok {
+				a.stopServiceRegistration()
+				return nil
+			}
+			specs := v.([]types.ReplicaSpec)
+			var spec types.ReplicaSpec
+			if len(specs) > 0 {
+				spec = specs[len(specs)-1]
+			}
+			a.updateServiceRegistration(ctx, spec)
 		}
 	}
+}
+
+func (a *Agent) updateServiceRegistration(ctx context.Context, spec types.ReplicaSpec) {
+	if a.reg == nil {
+		return
+	}
+	if a.baseService.ID == "" && a.baseService.Name == "" {
+		return
+	}
+	member := false
+	slot := 0
+	for i, id := range spec.Members {
+		if id == a.cfg.AgentID {
+			member = true
+			slot = i + 1
+			break
+		}
+	}
+	a.svcMu.Lock()
+	activeID := a.activeService.ID
+	activeSlot := a.activeSlot
+	a.svcMu.Unlock()
+
+	if member {
+		newReg := a.baseService
+		if newReg.Name == "" {
+			newReg.Name = "kafka"
+		}
+		if newReg.ID == "" {
+			newReg.ID = fmt.Sprintf("%s-%d", newReg.Name, slot)
+		}
+		if newReg.CheckID == "" {
+			newReg.CheckID = fmt.Sprintf("check:%s", newReg.ID)
+		}
+		if activeID == newReg.ID && activeSlot == slot {
+			return
+		}
+		a.stopServiceRegistration()
+		if err := a.reg.Register(ctx, newReg); err != nil {
+			log.Printf("[kafka-agent] service register failed: %v", err)
+			return
+		}
+		a.svcMu.Lock()
+		a.activeService = newReg
+		a.activeSlot = slot
+		a.svcMu.Unlock()
+		note := a.buildServiceNote("startup", "", nil, 0)
+		_ = a.reg.SetTTL(ctx, newReg.CheckID, servicereg.StatusWarning, note)
+		log.Printf("[kafka-agent] service registered (member of spec slot=%d) id=%s", slot, newReg.ID)
+		return
+	}
+
+	a.stopServiceRegistration()
+}
+
+func (a *Agent) stopServiceRegistration() {
+	a.svcMu.Lock()
+	active := a.activeService
+	a.activeService = servicereg.Registration{}
+	a.activeSlot = 0
+	a.svcMu.Unlock()
+
+	if active.ID != "" && a.reg != nil {
+		_ = a.reg.Deregister(context.Background(), active.ID)
+	}
+}
+
+func (a *Agent) getActiveService() servicereg.Registration {
+	a.svcMu.Lock()
+	defer a.svcMu.Unlock()
+	return a.activeService
 }
 
 func (a *Agent) execute(ctx context.Context, ord orders.Order) {
@@ -119,8 +211,8 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 				inits = append(inits, s)
 			}
 		}
-		standalone, _ := ord.Payload["standalone"].(bool)
-		err = a.startKafka(ctx, bss, inits, standalone)
+		mode, _ := ord.Payload["standalone"].(string)
+		err = a.startKafka(ctx, bss, inits, mode)
 	case orders.ActionStop:
 		err = a.stopKafka()
 	case orders.ActionAddVoter:
@@ -153,7 +245,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
 }
 
-func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, initialControllers []string, standalone bool) error {
+func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, initialControllers []string, mode string) error {
 	nodeID := a.nodeID()
 	addrs := a.normalizeBootstrapControllers(bootstrapControllers)
 	if len(addrs) == 0 && a.cfg.ControllerAddr != "" {
@@ -164,15 +256,6 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
 		return err
 	}
-	if standalone {
-		bs := []string{}
-		for _, addr := range strings.Split(bootstrap, ",") {
-			if addr != a.cfg.ControllerAddr {
-				bs = append(bs, addr)
-			}
-		}
-		bootstrap = strings.Join(bs, ",")
-	}
 	props := a.renderProperties(bootstrap)
 	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		return err
@@ -181,9 +264,12 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 	if a.cfg.ClusterID != "" {
 		fmtCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-storage.bat")
 		args := []string{"format", "-t", a.cfg.ClusterID, "-c", propsPath}
-		if standalone {
+		switch mode {
+		case "standalone":
 			args = append(args, "--standalone")
-		} else {
+		case "no-initial-controllers":
+			args = append(args, "--standalone")
+		default:
 			if bootstrap == "" {
 				return fmt.Errorf("controller.quorum.bootstrap.servers required for kafka-storage format")
 			}
@@ -565,13 +651,13 @@ func (a *Agent) kafkaHeartbeat(ctx context.Context) {
 				noteRole = "startup"
 			}
 			note := a.buildServiceNote(noteRole, info.leaderID, info.lags, info.maxLag)
-
-			if a.reg != nil && a.cfg.Service.CheckID != "" {
+			svc := a.getActiveService()
+			if a.reg != nil && svc.CheckID != "" {
 				status := servicereg.StatusWarning
 				if role != "" {
 					status = servicereg.StatusPassing
 				}
-				_ = a.reg.SetTTL(ctx, a.cfg.Service.CheckID, status, note)
+				_ = a.reg.SetTTL(ctx, svc.CheckID, status, note)
 			}
 			healthy := role != ""
 			a.publishHealth(ctx, healthy, note, note)
@@ -671,21 +757,22 @@ func (a *Agent) publishHealth(ctx context.Context, healthy bool, reason string, 
 	if a.cfg.HealthKey == "" {
 		return
 	}
+	svc := a.getActiveService()
 	meta := map[string]string{}
-	if a.cfg.Service.ID != "" {
-		meta["serviceId"] = a.cfg.Service.ID
+	if svc.ID != "" {
+		meta["serviceId"] = svc.ID
 	}
-	if a.cfg.Service.CheckID != "" {
-		meta["checkId"] = a.cfg.Service.CheckID
+	if svc.CheckID != "" {
+		meta["checkId"] = svc.CheckID
 	}
-	if a.cfg.Service.Address != "" {
-		meta["address"] = a.cfg.Service.Address
+	if svc.Address != "" {
+		meta["address"] = svc.Address
 	}
-	if a.cfg.Service.Port > 0 {
-		meta["port"] = strconv.Itoa(a.cfg.Service.Port)
+	if svc.Port > 0 {
+		meta["port"] = strconv.Itoa(svc.Port)
 	}
-	if len(a.cfg.Service.Tags) > 0 {
-		meta["tags"] = strings.Join(a.cfg.Service.Tags, ",")
+	if len(svc.Tags) > 0 {
+		meta["tags"] = strings.Join(svc.Tags, ",")
 	}
 	h := types.HealthStatus{
 		ID:          a.cfg.AgentID,
