@@ -286,29 +286,6 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		bootstrap = spec.KafkaBootstrapServers[0]
 	}
 
-	// Build initial controllers from the desired members (not just the new ones) so replacements join the existing quorum.
-	buildInitialControllers := func(ids []string) []string {
-		out := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if id == "" {
-				continue
-			}
-			node := nodeIDByID[id]
-			addr := ctrlAddrByID[id]
-			st := storageIDByID[id]
-			if st == "" {
-				st = dirIDFromSpec[id]
-			}
-			if node == "" || addr == "" || st == "" {
-				continue
-			}
-			out = append(out, fmt.Sprintf("%s@%s:%s", node, addr, st))
-		}
-		return out
-	}
-	initialControllers := buildInitialControllers(spec.Members)
-	log.Printf("[kafka-orders] initial controllers (all members): %v", initialControllers)
-
 	// remove voters first
 	stopTasks := make([]orderTask, 0, len(removed))
 	for _, id := range removed {
@@ -330,12 +307,10 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	// start added members
 	startTasks := make([]orderTask, 0, len(added))
 	for i, id := range added {
-		id := id
 		if i == 0 && !existingCluster {
 			if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers":   spec.KafkaBootstrapServers,
-				"initialControllers": initialControllers,
-				"mode":               "standalone",
+				"bootstrapServers": spec.KafkaBootstrapServers,
+				"mode":             "standalone",
 			}); err != nil {
 				log.Printf("[kafka-orders] failed to start initial controller %s: %v", id, err)
 				return err
@@ -344,9 +319,8 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		} else {
 
 			if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers":   spec.KafkaBootstrapServers,
-				"initialControllers": initialControllers,
-				"mode":               "no-initial-controllers",
+				"bootstrapServers": spec.KafkaBootstrapServers,
+				"mode":             "no-initial-controllers",
 			}); err != nil {
 				log.Printf("[kafka-orders] failed to start initial controller %s: %v", id, err)
 				return err
@@ -354,6 +328,16 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 		}
 	}
+	// if len(added) == 1 && existingCluster {
+	// 	id := added[0]
+	// 	if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionReassignPartitions, epoch, map[string]any{
+	// 		"bootstrapServers": spec.KafkaBootstrapServers,
+	// 		"mode":             "no-initial-controllers",
+	// 	}); err != nil {
+	// 		log.Printf("[kafka-orders] failed to start reassignpartitions %s: %v", id, err)
+	// 		return err
+	// 	}
+	// }
 	runParallelBestEffort(ctx, startTasks)
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)

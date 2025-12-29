@@ -44,12 +44,17 @@ type Config struct {
 }
 
 type Agent struct {
-	cfg  Config
-	kv   store.KV
-	reg  servicereg.Registry
-	proc *os.Process
+	cfg Config
+	kv  store.KV
+	reg servicereg.Registry
+	// procCmd holds the running Kafka command (for Wait supervision).
+	procCmd *exec.Cmd
+	proc    *os.Process
 	// procLog holds the log file handle for the running Kafka process.
 	procLog *os.File
+
+	procMu           sync.Mutex
+	procExpectedExit bool
 
 	baseService   servicereg.Registration
 	activeService servicereg.Registration
@@ -153,6 +158,7 @@ func (a *Agent) updateServiceRegistration(ctx context.Context, spec types.Replic
 		if activeID == newReg.ID && activeSlot == slot {
 			return
 		}
+		newReg.TTL = "15s"
 		a.stopServiceRegistration()
 		if err := a.reg.Register(ctx, newReg); err != nil {
 			log.Printf("[kafka-agent] service register failed: %v", err)
@@ -203,15 +209,8 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 				bss = append(bss, s)
 			}
 		}
-		initAny, _ := ord.Payload["initialControllers"].([]any)
-		inits := make([]string, 0, len(initAny))
-		for _, x := range initAny {
-			if s, ok := x.(string); ok && s != "" {
-				inits = append(inits, s)
-			}
-		}
-		mode, _ := ord.Payload["standalone"].(string)
-		err = a.startKafka(ctx, bss, inits, mode)
+		mode, _ := ord.Payload["mode"].(string)
+		err = a.startKafka(ctx, bss, mode)
 	case orders.ActionStop:
 		err = a.stopKafka()
 	case orders.ActionAddVoter:
@@ -244,7 +243,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	_ = a.kv.PutJSON(ctx, a.cfg.AckKey, &ack)
 }
 
-func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, initialControllers []string, mode string) error {
+func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, mode string) error {
 	nodeID := a.nodeID()
 	addrs := a.normalizeBootstrapControllers(bootstrapControllers)
 	if len(addrs) == 0 && a.cfg.ControllerAddr != "" {
@@ -267,16 +266,8 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 		case "standalone":
 			args = append(args, "--standalone")
 		case "no-initial-controllers":
-			args = append(args, "--standalone")
+			args = append(args, "--no-initial-controllers")
 		default:
-			if bootstrap == "" {
-				return fmt.Errorf("controller.quorum.bootstrap.servers required for kafka-storage format")
-			}
-			initialControllersStr := strings.Join(initialControllers, ",")
-			if initialControllersStr == "" {
-				return fmt.Errorf("initial controllers required for kafka-storage format")
-			}
-			args = append(args, "--initial-controllers", initialControllersStr)
 		}
 		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, fmtCmd, args...)
@@ -299,27 +290,32 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, i
 		_ = logFile.Close()
 		return err
 	}
+	a.procMu.Lock()
+	a.procCmd = cmd
 	a.proc = cmd.Process
 	a.procLog = logFile
+	a.procExpectedExit = false
+	a.procMu.Unlock()
 	log.Printf("[kafka-agent] started kafka pid=%d", cmd.Process.Pid)
+	go a.watchKafkaProcess(ctx, cmd)
 	runNote := a.buildServiceNote("running", "", nil, 0)
 	a.publishHealth(ctx, true, runNote, runNote)
 	return nil
 }
 
 func (a *Agent) stopKafka() error {
-	if a.proc == nil {
+	a.procMu.Lock()
+	cmd := a.procCmd
+	if cmd == nil || cmd.Process == nil {
+		a.procMu.Unlock()
 		return nil
 	}
-	pid := a.proc.Pid
+	a.procExpectedExit = true
+	pid := cmd.Process.Pid
+	a.procMu.Unlock()
 	_ = exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T").Run()
 	time.Sleep(2 * time.Second)
 	_ = exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid), "/T").Run()
-	a.proc = nil
-	if a.procLog != nil {
-		_ = a.procLog.Close()
-		a.procLog = nil
-	}
 	a.publishHealth(context.Background(), false, "stopped", "stopped")
 	return nil
 }
@@ -342,7 +338,12 @@ controller.listener.names=CONTROLLER
 listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
 
 controller.quorum.bootstrap.servers=%s
+# Replication defaults
+default.replication.factor=3
+min.insync.replicas=2
 
+# (optional but recommended)
+unclean.leader.election.enable=false
 log.dirs=%s
 metadata.log.dir=%s
 `, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, logDir, metaLogDir)
@@ -540,6 +541,7 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	if err != nil {
 		return err
 	}
+	log.Printf("[kafka-agent] topics:\n%s", string(out))
 	topics := []string{}
 	for _, ln := range strings.Split(string(out), "\n") {
 		t := strings.TrimSpace(ln)
@@ -791,6 +793,32 @@ func (a *Agent) publishHealth(ctx context.Context, healthy bool, reason string, 
 	if err := a.kv.PutJSON(ctx, a.cfg.HealthKey, &h); err != nil {
 		log.Printf("[kafka-agent] health publish error: %v", err)
 	}
+}
+
+func (a *Agent) watchKafkaProcess(ctx context.Context, cmd *exec.Cmd) {
+	err := cmd.Wait()
+	a.procMu.Lock()
+	expected := a.procExpectedExit
+	if a.procCmd == cmd {
+		a.procCmd = nil
+		a.proc = nil
+	}
+	if a.procLog != nil {
+		_ = a.procLog.Close()
+		a.procLog = nil
+	}
+	a.procMu.Unlock()
+	if ctx.Err() != nil || expected {
+		log.Printf("[kafka-agent] kafka process exited (expected): %v", err)
+		return
+	}
+	reason := "kafka process exited"
+	if err != nil {
+		reason = fmt.Sprintf("kafka process exited: %v", err)
+	}
+	log.Printf("[kafka-agent] %s", reason)
+	note := a.buildServiceNote("stopped", "", nil, 0)
+	a.publishHealth(context.Background(), false, reason, note)
 }
 
 func extractFirstDigits(s string) string {
