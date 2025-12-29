@@ -142,15 +142,14 @@ func (a *Agent) updateServiceRegistration(ctx context.Context, spec types.Replic
 
 	if member {
 		newReg := a.baseService
-		if newReg.Name == "" {
-			newReg.Name = "kafka"
+		baseName := newReg.Name
+		if baseName == "" {
+			baseName = "kafka"
 		}
-		if newReg.ID == "" {
-			newReg.ID = fmt.Sprintf("%s-%d", newReg.Name, slot)
-		}
-		if newReg.CheckID == "" {
-			newReg.CheckID = fmt.Sprintf("check:%s", newReg.ID)
-		}
+		newReg.Name = baseName
+		slotID := fmt.Sprintf("kafka-%d", slot)
+		newReg.ID = slotID
+		newReg.CheckID = fmt.Sprintf("check:%s", slotID)
 		if activeID == newReg.ID && activeSlot == slot {
 			return
 		}

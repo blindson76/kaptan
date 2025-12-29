@@ -66,7 +66,7 @@ func main() {
 	if err := runtime.WaitConsulReady(ctx, rawCli, 2*time.Minute); err != nil {
 		log.Fatalf("%s consul not ready: %v", logPrefix, err)
 	}
-	time.Sleep(5 * time.Second)
+	// time.Sleep(5 * time.Second)
 	log.Printf("%s consul is ready", logPrefix)
 	locker := st.Locker()
 

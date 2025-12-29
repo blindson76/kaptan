@@ -39,6 +39,23 @@ type Worker struct {
 func New(cfg Config, kv store.KV) *Worker { return &Worker{cfg: cfg, kv: kv} }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
+	attempt := 0
+	for {
+		attempt++
+		err := w.runProbe(ctx)
+		if err == nil {
+			return nil
+		}
+		log.Printf("[kafka-worker] offline status probe attempt=%d failed: %v", attempt, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+func (w *Worker) runProbe(ctx context.Context) error {
 	log.Printf("[kafka-worker] offline status probe starting")
 
 	w.cleanupDataDirs()
