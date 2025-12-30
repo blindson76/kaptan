@@ -224,8 +224,22 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 		dirID, _ := ord.Payload["controllerDirectoryId"].(string)
 		err = a.removeController(ctx, bs, cid, dirID)
 	case orders.ActionReassignPartitions:
-		bss, _ := ord.Payload["bootstrap-servers"].(string)
-		err = a.reassignPartitions(ctx, bss)
+		bssAny, _ := ord.Payload["bootstrap-servers"].([]any)
+		bscAny, _ := ord.Payload["bootstrap-controllers"].([]any)
+		bss := make([]string, 0, len(bssAny))
+		bsc := make([]string, 0, len(bscAny))
+		for _, x := range bssAny {
+			if s, ok := x.(string); ok && s != "" {
+				bss = append(bss, s)
+			}
+		}
+		for _, x := range bscAny {
+			if s, ok := x.(string); ok && s != "" {
+				bsc = append(bsc, s)
+			}
+		}
+		log.Printf("[kafka-agent] reassign partitions ord:%v bootstrap servers: %+v bootstrap controllers: %+v", ord, bss, bsc)
+		err = a.reassignPartitions(ctx, strings.Join(bss, ","), strings.Join(bsc, ","))
 	}
 	if err != nil {
 		ack.Ok = false
@@ -266,6 +280,7 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 		}
 		log.Printf("[kafka-agent] exec %s %s", fmtCmd, strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, fmtCmd, args...)
+		cmd.Env = a.kafkaEnv()
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		_ = cmd.Run()
@@ -279,6 +294,7 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 	}
 	log.Printf("[kafka-agent] start %s %s (log=%s)", startCmd, propsPath, logPath)
 	cmd := exec.CommandContext(ctx, startCmd, propsPath)
+	cmd.Env = a.kafkaEnv()
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
@@ -364,6 +380,31 @@ func (a *Agent) normalizeBootstrapControllers(bootstrapControllers []string) []s
 		}
 	}
 	return addrs
+}
+
+func (a *Agent) kafkaEnv() []string {
+	env := os.Environ()
+	if a.cfg.KafkaBinDir == "" {
+		return env
+	}
+	logCfg := filepath.Join(a.cfg.KafkaBinDir, "..", "..", "config", "log4j2.yaml")
+	log.Printf("[kafka-agent] setting KAFKA_LOG4J_OPTS to use log4j2 config: %s", logCfg)
+	return setEnvVar(env, "KAFKA_LOG4J_OPTS", fmt.Sprintf("-Dlog4j2.configurationFile=%s", logCfg))
+}
+
+func setEnvVar(env []string, key, value string) []string {
+	prefix := key + "="
+	replaced := false
+	for i, kv := range env {
+		if k, _, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, key) {
+			env[i] = prefix + value
+			replaced = true
+		}
+	}
+	if !replaced {
+		env = append(env, prefix+value)
+	}
+	return env
 }
 
 func (a *Agent) buildInitialControllers(bootstrapAddrs []string, provided []string) (string, error) {
@@ -459,14 +500,16 @@ func (a *Agent) waitQuorumReady(ctx context.Context, bootstrapServer string, tim
 	dl := time.Now().Add(timeout)
 	attempt := 0
 	for time.Now().Before(dl) {
-		args := []string{"--bootstrap-server", bootstrapServer, "describe", "--status"}
+		args := []string{"--bootstrap-controller", bootstrapServer, "describe", "--status"}
 		log.Printf("[kafka-agent] exec %s %s (attempt=%d)", tool, strings.Join(args, " "), attempt)
 		attempt++
 		cmd := exec.CommandContext(ctx, tool, args...)
+		cmd.Env = a.kafkaEnv()
 		out, err := cmd.CombinedOutput()
 		if err == nil {
 			return nil
 		}
+		log.Printf("[kafka-agent] quorum status output:\n%s", string(out))
 		low := strings.ToLower(string(out))
 		if strings.Contains(low, "not init") {
 			return fmt.Errorf("metadata quorum unavailable (bootstrap=%s): cluster not initialized", bootstrapServer)
@@ -492,6 +535,7 @@ func (a *Agent) addController(ctx context.Context, bootstrapServer, voterID, vot
 	args := []string{"--bootstrap-controller", bootstrapServer, "add-controller", "--controller", controller}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Env = a.kafkaEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -502,6 +546,7 @@ func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, cid string, cd
 	args := []string{"--bootstrap-controller", bootstrapServer, "remove-controller", "--controller-id", cid, "--controller-directory-id", cdid}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Env = a.kafkaEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -515,15 +560,16 @@ func (a *Agent) removeController(ctx context.Context, bootstrapController, contr
 	}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
+	cmd.Env = a.kafkaEnv()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
 
-func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) error {
+func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string, bootstrapControllers string) error {
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "start", "done": false, "updatedAt": time.Now().Format(time.RFC3339)})
 	defer a.clearProgress()
-	if err := a.waitQuorumReady(ctx, bootstrapServer, 90*time.Second); err != nil {
+	if err := a.waitQuorumReady(ctx, bootstrapControllers, 90*time.Second); err != nil {
 		return err
 	}
 	log.Printf("[kafka-agent] starting partition reassignment via %s", bootstrapServer)
@@ -533,7 +579,9 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "list_topics", "done": false, "updatedAt": time.Now().Format(time.RFC3339)})
 	listArgs := []string{"--bootstrap-server", bootstrapServer, "--list"}
 	log.Printf("[kafka-agent] exec %s %s", topicsTool, strings.Join(listArgs, " "))
-	out, err := exec.CommandContext(ctx, topicsTool, listArgs...).Output()
+	listCmd := exec.CommandContext(ctx, topicsTool, listArgs...)
+	listCmd.Env = a.kafkaEnv()
+	out, err := listCmd.Output()
 	if err != nil {
 		return err
 	}
@@ -546,6 +594,7 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 		}
 	}
 	if len(topics) == 0 {
+		log.Printf("[kafka-agent] no topics to reassign")
 		return nil
 	}
 
@@ -569,10 +618,12 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	genArgs := []string{"--bootstrap-server", bootstrapServer, "--broker-list", brokerList, "--topics-to-move-json-file", topicsPath, "--generate"}
 	log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(genArgs, " "))
 	genCmd := exec.CommandContext(ctx, reassignTool, genArgs...)
-	genOut, genErr := genCmd.CombinedOutput()
+	genCmd.Env = a.kafkaEnv()
+	genOut, genErr := genCmd.Output()
 	if genErr != nil {
 		return fmt.Errorf("generate failed: %v\n%s", genErr, string(genOut))
 	}
+	log.Printf("[kafka-agent] generated reassignment plan:\n%s", string(genOut))
 	plan, err := extractJSONBlock(string(genOut))
 	if err != nil {
 		return err
@@ -584,6 +635,7 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	execArgs := []string{"--bootstrap-server", bootstrapServer, "--reassignment-json-file", planPath, "--execute"}
 	log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(execArgs, " "))
 	execCmd := exec.CommandContext(ctx, reassignTool, execArgs...)
+	execCmd.Env = a.kafkaEnv()
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
 	if err := execCmd.Run(); err != nil {
@@ -595,6 +647,7 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 		verArgs := []string{"--bootstrap-server", bootstrapServer, "--reassignment-json-file", planPath, "--verify"}
 		log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(verArgs, " "))
 		verCmd := exec.CommandContext(ctx, reassignTool, verArgs...)
+		verCmd.Env = a.kafkaEnv()
 		out, _ := verCmd.CombinedOutput()
 		msg := strings.TrimSpace(string(out))
 		if len(msg) > 280 {
@@ -679,9 +732,11 @@ func (a *Agent) detectKafkaInfo(ctx context.Context) kafkaInfo {
 	}
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
 	statusCmd := exec.CommandContext(ctx, tool, "--bootstrap-controller", bs, "describe", "--status")
+	statusCmd.Env = a.kafkaEnv()
 	statusOut, statusErr := statusCmd.CombinedOutput()
 
 	replicationCmd := exec.CommandContext(ctx, tool, "--bootstrap-controller", bs, "describe", "--replication")
+	replicationCmd.Env = a.kafkaEnv()
 	replicationOut, _ := replicationCmd.CombinedOutput()
 
 	leader := extractFirstDigits(string(statusOut))

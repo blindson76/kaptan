@@ -331,7 +331,8 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	if len(added) == 1 && existingCluster {
 		id := added[0]
 		if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionReassignPartitions, epoch, map[string]any{
-			"bootstrap-servers": spec.KafkaBootstrapServers,
+			"bootstrap-servers":     spec.KafkaBootstrapServers,
+			"bootstrap-controllers": spec.KafkaBootstrapControllers,
 		}); err != nil {
 			log.Printf("[kafka-orders] failed to start reassignpartitions %s: %v", id, err)
 			return err
