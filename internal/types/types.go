@@ -57,9 +57,10 @@ type ReplicaSpec struct {
 	MongoWipeMembers    map[string]bool `json:"mongoWipeMembers,omitempty"`
 
 	// Kafka-specific hints (used by provider/job templates)
-	KafkaMode             string   `json:"kafkaMode,omitempty"` // "combined"
-	KafkaDynamicVoter     bool     `json:"kafkaDynamicVoter,omitempty"`
-	KafkaBootstrapServers []string `json:"kafkaBootstrapServers,omitempty"` // controller.quorum.bootstrap.servers
+	KafkaMode                 string   `json:"kafkaMode,omitempty"` // "combined"
+	KafkaDynamicVoter         bool     `json:"kafkaDynamicVoter,omitempty"`
+	KafkaBootstrapControllers []string `json:"kafkaBootstrapControllers,omitempty"` // controller.quorum.bootstrap.controllers
+	KafkaBootstrapServers     []string `json:"kafkaBootstrapServers,omitempty"`     // controller.quorum.bootstrap.servers
 	// Directory IDs per controller for remove-controller operations.
 	KafkaControllerDirectoryIDs map[string]string `json:"kafkaControllerDirectoryIds,omitempty"`
 	KafkaMemberIDs              map[string]string `json:"kafkaMemberIds,omitempty"`

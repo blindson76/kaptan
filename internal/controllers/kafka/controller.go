@@ -332,13 +332,17 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		}
 	}
 	c.specVersion++
-	bootstrap := make([]string, 0, len(members))
+	bootstrapControllers := make([]string, 0, len(members))
+	bootstrapServers := make([]string, 0, len(members))
 	// Build controller.quorum.bootstrap.servers from selected candidates controller addresses
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
 				if cr.KafkaControllerAddr != "" {
-					bootstrap = append(bootstrap, cr.KafkaControllerAddr)
+					bootstrapControllers = append(bootstrapControllers, cr.KafkaControllerAddr)
+				}
+				if cr.KafkaBrokerAddr != "" {
+					bootstrapServers = append(bootstrapServers, cr.KafkaBrokerAddr)
 				}
 			}
 		}
@@ -351,7 +355,8 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		Version:                     c.specVersion,
 		KafkaMode:                   "combined",
 		KafkaDynamicVoter:           true,
-		KafkaBootstrapServers:       bootstrap,
+		KafkaBootstrapControllers:   bootstrapControllers,
+		KafkaBootstrapServers:       bootstrapServers,
 		KafkaControllerDirectoryIDs: dirIDs,
 		KafkaMemberIDs:              memberIDs,
 	}
@@ -486,13 +491,17 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	members[failedIdx] = replacement
 
 	c.specVersion++
-	bootstrap := make([]string, 0, len(members))
+	bootstrapControllers := make([]string, 0, len(members))
+	bootstrapServers := make([]string, 0, len(members))
 	// Build controller.quorum.bootstrap.servers from selected candidates controller addresses
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
 				if cr.KafkaControllerAddr != "" {
-					bootstrap = append(bootstrap, cr.KafkaControllerAddr)
+					bootstrapControllers = append(bootstrapControllers, cr.KafkaControllerAddr)
+				}
+				if cr.KafkaBrokerAddr != "" {
+					bootstrapServers = append(bootstrapServers, cr.KafkaBrokerAddr)
 				}
 			}
 		}
@@ -505,7 +514,8 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		Version:                     c.specVersion,
 		KafkaMode:                   "combined",
 		KafkaDynamicVoter:           true,
-		KafkaBootstrapServers:       bootstrap,
+		KafkaBootstrapControllers:   bootstrapControllers,
+		KafkaBootstrapServers:       bootstrapServers,
 		KafkaControllerDirectoryIDs: dirIDs,
 	}
 	c.spec = spec

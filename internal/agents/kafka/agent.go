@@ -202,35 +202,30 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	var err error
 	switch ord.Action {
 	case orders.ActionStart:
-		bsAny, _ := ord.Payload["bootstrapServers"].([]any)
-		bss := make([]string, 0, len(bsAny))
+		bsAny, _ := ord.Payload["bootstrap-controllers"].([]any)
+		bsc := make([]string, 0, len(bsAny))
 		for _, x := range bsAny {
 			if s, ok := x.(string); ok && s != "" {
-				bss = append(bss, s)
+				bsc = append(bsc, s)
 			}
 		}
 		mode, _ := ord.Payload["mode"].(string)
-		err = a.startKafka(ctx, bss, mode)
+		err = a.startKafka(ctx, bsc, mode)
 	case orders.ActionStop:
 		err = a.stopKafka()
-	case orders.ActionAddVoter:
-		bs, _ := ord.Payload["bootstrapServer"].(string)
-		vid, _ := ord.Payload["voterId"].(string)
-		ep, _ := ord.Payload["voterEndpoint"].(string)
-		err = a.addVoter(ctx, bs, vid, ep)
-	case orders.ActionRemoveVoter:
-		bs, _ := ord.Payload["bootstrapServer"].(string)
-		cid, _ := ord.Payload["controller-id"].(string)
-		cdid, _ := ord.Payload["controller-directory-id"].(string)
-		err = a.removeVoter(ctx, bs, cid, cdid)
+	case orders.ActionAddController:
+		bs, _ := ord.Payload["bootstrap-controller"].(string)
+		cid, _ := ord.Payload["controllerId"].(string)
+		cdid, _ := ord.Payload["controllerDirectoryId"].(string)
+		err = a.addController(ctx, bs, cid, cdid)
 	case orders.ActionRemoveController:
-		bs, _ := ord.Payload["bootstrapServer"].(string)
+		bs, _ := ord.Payload["bootstrap-controller"].(string)
 		cid, _ := ord.Payload["controllerId"].(string)
 		dirID, _ := ord.Payload["controllerDirectoryId"].(string)
 		err = a.removeController(ctx, bs, cid, dirID)
 	case orders.ActionReassignPartitions:
-		bs, _ := ord.Payload["bootstrapServer"].(string)
-		err = a.reassignPartitions(ctx, bs)
+		bss, _ := ord.Payload["bootstrap-servers"].(string)
+		err = a.reassignPartitions(ctx, bss)
 	}
 	if err != nil {
 		ack.Ok = false
@@ -485,7 +480,7 @@ func (a *Agent) waitQuorumReady(ctx context.Context, bootstrapServer string, tim
 	return fmt.Errorf("quorum not ready via %s", bootstrapServer)
 }
 
-func (a *Agent) addVoter(ctx context.Context, bootstrapServer, voterID, voterEndpoint string) error {
+func (a *Agent) addController(ctx context.Context, bootstrapServer, voterID, voterEndpoint string) error {
 	if err := waitTCP(voterEndpoint, 90*time.Second); err != nil {
 		return err
 	}
@@ -531,6 +526,7 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string) 
 	if err := a.waitQuorumReady(ctx, bootstrapServer, 90*time.Second); err != nil {
 		return err
 	}
+	log.Printf("[kafka-agent] starting partition reassignment via %s", bootstrapServer)
 	topicsTool := filepath.Join(a.cfg.KafkaBinDir, "kafka-topics.bat")
 	reassignTool := filepath.Join(a.cfg.KafkaBinDir, "kafka-reassign-partitions.bat")
 

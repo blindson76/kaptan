@@ -19,8 +19,7 @@ const (
 	ActionInit        Action = "init"
 	ActionReconfigure Action = "reconfigure"
 
-	ActionAddVoter           Action = "add_voter"
-	ActionRemoveVoter        Action = "remove_voter"
+	ActionAddController      Action = "add_controller"
 	ActionRemoveController   Action = "remove_controller"
 	ActionReassignPartitions Action = "reassign_partitions"
 )
