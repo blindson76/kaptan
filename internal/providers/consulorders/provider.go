@@ -269,12 +269,6 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	added, removed, surrendered := diffMembers(old.Members, spec.Members)
 	log.Printf("Diff: added:%v removed:%v surrendered:%v", added, removed, surrendered)
-	addedSet := map[string]bool{}
-	for _, id := range added {
-		if id != "" {
-			addedSet[id] = true
-		}
-	}
 
 	coordinatorID := ""
 	bootstrap := ""
@@ -308,27 +302,39 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 	startTasks := make([]orderTask, 0, len(added))
 	for i, id := range added {
 		if i == 0 && !existingCluster {
-			if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrap-controllers": spec.KafkaBootstrapControllers,
-				"mode":                  "standalone",
-			}); err != nil {
-				log.Printf("[kafka-orders] failed to start initial controller %s: %v", id, err)
-				return err
-			}
+			startTasks = append(startTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+					"bootstrap-controllers": spec.KafkaBootstrapControllers,
+					"mode":                  "standalone",
+				})
+			})
 
 		} else {
-
-			if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrap-controllers": spec.KafkaBootstrapControllers,
-				"mode":                  "no-initial-controllers",
-			}); err != nil {
-				log.Printf("[kafka-orders] failed to start initial controller %s: %v", id, err)
-				return err
-			}
+			startTasks = append(startTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+					"bootstrap-controllers": spec.KafkaBootstrapControllers,
+					"mode":                  "no-initial-controllers",
+				})
+			})
 
 		}
 	}
-	if len(added) == 1 && existingCluster {
+	runParallelBestEffort(ctx, startTasks)
+
+	startAddCtrlTasks := make([]orderTask, 0, len(added))
+	for i, id := range added {
+		if i == 0 && !existingCluster {
+			continue
+		}
+		startAddCtrlTasks = append(startAddCtrlTasks, func(ctx context.Context) error {
+			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionAddController, epoch, map[string]any{
+				"bootstrap-controllers": spec.KafkaBootstrapControllers,
+			})
+		})
+	}
+	runParallelBestEffort(ctx, startAddCtrlTasks)
+
+	if len(added) > 0 && existingCluster {
 		id := added[0]
 		if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionReassignPartitions, epoch, map[string]any{
 			"bootstrap-servers":     spec.KafkaBootstrapServers,
@@ -338,7 +344,6 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 			return err
 		}
 	}
-	runParallelBestEffort(ctx, startTasks)
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)
 	return nil

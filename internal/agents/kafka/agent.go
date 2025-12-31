@@ -40,7 +40,8 @@ type Config struct {
 	NodeID    string
 	StorageID string
 
-	Service servicereg.Registration
+	Service   servicereg.Registration
+	PropsPath string
 }
 
 type Agent struct {
@@ -214,10 +215,14 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	case orders.ActionStop:
 		err = a.stopKafka()
 	case orders.ActionAddController:
-		bs, _ := ord.Payload["bootstrap-controller"].(string)
-		cid, _ := ord.Payload["controllerId"].(string)
-		cdid, _ := ord.Payload["controllerDirectoryId"].(string)
-		err = a.addController(ctx, bs, cid, cdid)
+		bsAny, _ := ord.Payload["bootstrap-controllers"].([]any)
+		bsc := make([]string, 0, len(bsAny))
+		for _, x := range bsAny {
+			if s, ok := x.(string); ok && s != "" {
+				bsc = append(bsc, s)
+			}
+		}
+		err = a.addController(ctx, strings.Join(bsc, ","))
 	case orders.ActionRemoveController:
 		bs, _ := ord.Payload["bootstrap-controller"].(string)
 		cid, _ := ord.Payload["controllerId"].(string)
@@ -260,6 +265,7 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 	}
 	bootstrap := strings.Join(addrs, ",")
 	propsPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("server-%s.properties", nodeID))
+	a.cfg.PropsPath = propsPath
 	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
 		return err
 	}
@@ -505,7 +511,7 @@ func (a *Agent) waitQuorumReady(ctx context.Context, bootstrapServer string, tim
 		attempt++
 		cmd := exec.CommandContext(ctx, tool, args...)
 		cmd.Env = a.kafkaEnv()
-		out, err := cmd.CombinedOutput()
+		out, err := cmd.Output()
 		if err == nil {
 			return nil
 		}
@@ -523,22 +529,137 @@ func (a *Agent) waitQuorumReady(ctx context.Context, bootstrapServer string, tim
 	return fmt.Errorf("quorum not ready via %s", bootstrapServer)
 }
 
-func (a *Agent) addController(ctx context.Context, bootstrapServer, voterID, voterEndpoint string) error {
-	if err := waitTCP(voterEndpoint, 90*time.Second); err != nil {
+func (a *Agent) waitGetObserver(ctx context.Context, bootstrapController string, timeout time.Duration) error {
+	nodeID := strings.TrimSpace(a.nodeID())
+	if nodeID == "" {
+		return fmt.Errorf("node id required for observer wait")
+	}
+	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
+	dl := time.Now().Add(timeout)
+	attempt := 0
+	for time.Now().Before(dl) {
+		args := []string{"--bootstrap-controller", bootstrapController, "describe", "--status"}
+		log.Printf("[kafka-agent] exec %s %s (observer attempt=%d)", tool, strings.Join(args, " "), attempt)
+		attempt++
+		cmd := exec.CommandContext(ctx, tool, args...)
+		cmd.Env = a.kafkaEnv()
+		out, err := cmd.Output()
+		if observerListed(string(out), nodeID) {
+			return nil
+		}
+		if err != nil {
+			log.Printf("[kafka-agent] observer check error: %v", err)
+		}
+		log.Printf("[kafka-agent] observer check output:\n%s", string(out))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return fmt.Errorf("observer state not reached for node %s via %s", nodeID, bootstrapController)
+}
+
+func observerListed(status string, nodeID string) bool {
+	if nodeID == "" {
+		return false
+	}
+	reCurrent := regexp.MustCompile(`(?mi)currentobservers:\s*(\[[^\r\n]*\])`)
+	reInSync := regexp.MustCompile(`(?mi)in-sync\s+observers:\s*(\[[^\r\n]*\])`)
+	for _, re := range []*regexp.Regexp{reCurrent, reInSync} {
+		m := re.FindStringSubmatch(status)
+		if len(m) == 2 {
+			for _, id := range parseObserverList(m[1]) {
+				if id == nodeID {
+					return true
+				}
+			}
+		}
+	}
+	log.Printf("[kafka-agent] observer %s not found in status", nodeID)
+	return false
+}
+
+func parseObserverList(list string) []string {
+	reID := regexp.MustCompile(`(?i)"id"\s*:\s*([0-9]+)`)
+	out := []string{}
+	for _, m := range reID.FindAllStringSubmatch(list, -1) {
+		if len(m) == 2 {
+			id := strings.TrimSpace(m[1])
+			if id != "" {
+				out = append(out, id)
+			}
+		}
+	}
+	if len(out) > 0 {
+		return out
+	}
+	parts := strings.Split(list, ",")
+	for _, raw := range parts {
+		id := strings.TrimSpace(raw)
+		if id == "" {
+			continue
+		}
+		if idx := strings.IndexAny(id, "@ \t("); idx >= 0 {
+			id = id[:idx]
+		}
+		if strings.Contains(id, "=") {
+			id = id[strings.LastIndex(id, "=")+1:]
+		}
+		id = strings.Trim(id, "{}")
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func (a *Agent) addController(ctx context.Context, bootstrapServer string) error {
+	ctrlEndpoint := strings.TrimSpace(a.cfg.ControllerAddr)
+	if ctrlEndpoint == "" {
+		return fmt.Errorf("controller address required for add-controller")
+	}
+	bootstrapServer = strings.TrimSpace(bootstrapServer)
+	if bootstrapServer == "" {
+		return fmt.Errorf("bootstrap controller required for add-controller")
+	}
+	log.Printf("[kafka-agent] adding controller %s via bootstrap %s", ctrlEndpoint, bootstrapServer)
+	if err := waitTCP(trimHostPort(ctrlEndpoint), 90*time.Second); err != nil {
 		return err
 	}
+	log.Printf("[kafka-agent] controller endpoint %s reachable", ctrlEndpoint)
 	if err := a.waitQuorumReady(ctx, bootstrapServer, 90*time.Second); err != nil {
 		return err
 	}
+	log.Printf("[kafka-agent] quorum ready via %s", bootstrapServer)
+	if err := a.waitGetObserver(ctx, bootstrapServer, 90*time.Second); err != nil {
+		return err
+	}
+	controllerEndpoint := trimHostPort(ctrlEndpoint)
+	if a.cfg.StorageID != "" {
+		controllerEndpoint = ensureStorageSuffix(controllerEndpoint, a.cfg.StorageID)
+	}
 	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	controller := fmt.Sprintf("%s@%s", voterID, voterEndpoint)
-	args := []string{"--bootstrap-controller", bootstrapServer, "add-controller", "--controller", controller}
-	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
-	cmd := exec.CommandContext(ctx, tool, args...)
-	cmd.Env = a.kafkaEnv()
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	args := []string{"--command-config", a.cfg.PropsPath, "--bootstrap-controller", bootstrapServer, "add-controller"}
+	attempt := 0
+	for {
+		log.Printf("[kafka-agent] exec %s %s (attempt=%d)", tool, strings.Join(args, " "), attempt)
+		cmd := exec.CommandContext(ctx, tool, args...)
+		cmd.Env = a.kafkaEnv()
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			attempt++
+			if attempt < 3 {
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return err
+		}
+		break
+	}
+	return nil
 }
 
 func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, cid string, cdid string) error {
