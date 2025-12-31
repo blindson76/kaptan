@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -225,8 +226,8 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 		err = a.addController(ctx, strings.Join(bsc, ","))
 	case orders.ActionRemoveController:
 		bs, _ := ord.Payload["bootstrap-controller"].(string)
-		cid, _ := ord.Payload["controllerId"].(string)
-		dirID, _ := ord.Payload["controllerDirectoryId"].(string)
+		cid, _ := ord.Payload["controller-id"].(string)
+		dirID, _ := ord.Payload["controller-directory-id"].(string)
 		err = a.removeController(ctx, bs, cid, dirID)
 	case orders.ActionReassignPartitions:
 		bssAny, _ := ord.Payload["bootstrap-servers"].([]any)
@@ -394,7 +395,7 @@ func (a *Agent) kafkaEnv() []string {
 		return env
 	}
 	logCfg := filepath.Join(a.cfg.KafkaBinDir, "..", "..", "config", "log4j2.yaml")
-	log.Printf("[kafka-agent] setting KAFKA_LOG4J_OPTS to use log4j2 config: %s", logCfg)
+	// log.Printf("[kafka-agent] setting KAFKA_LOG4J_OPTS to use log4j2 config: %s", logCfg)
 	return setEnvVar(env, "KAFKA_LOG4J_OPTS", fmt.Sprintf("-Dlog4j2.configurationFile=%s", logCfg))
 }
 
@@ -650,6 +651,7 @@ func (a *Agent) addController(ctx context.Context, bootstrapServer string) error
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
+			log.Printf("[kafka-agent] add-controller error: %v", err)
 			attempt++
 			if attempt < 3 {
 				time.Sleep(3 * time.Second)
@@ -657,6 +659,7 @@ func (a *Agent) addController(ctx context.Context, bootstrapServer string) error
 			}
 			return err
 		}
+		log.Printf("[kafka-agent] controller exited %d added successfully", cmd.ProcessState.ExitCode())
 		break
 	}
 	return nil
@@ -674,11 +677,25 @@ func (a *Agent) removeVoter(ctx context.Context, bootstrapServer, cid string, cd
 }
 
 func (a *Agent) removeController(ctx context.Context, bootstrapController, controllerID, controllerDirID string) error {
-	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
-	args := []string{"--bootstrap-controller", bootstrapController, "remove-controller", "--controller-id", controllerID}
-	if controllerDirID != "" {
-		args = append(args, "--controller-directory-id", controllerDirID)
+	if controllerID == "" {
+		return fmt.Errorf("controller id required for remove-controller")
 	}
+	replication, err := a.metaDecribeReplication(ctx, bootstrapController)
+	log.Printf("[kafka-agent] remove controller replication state: %+v err:%v", replication, err)
+	var directoryId string
+	for _, ctrl := range replication.Rows {
+		log.Printf("[kafka-agent] checking controller id %d vs %s", ctrl.NodeID, controllerID)
+		if controllerID == fmt.Sprint(ctrl.NodeID) {
+			directoryId = ctrl.DirectoryID
+			break
+		}
+	}
+	if directoryId == "" {
+		return fmt.Errorf("controller id %s not found in replication state", controllerID)
+	}
+
+	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
+	args := []string{"--bootstrap-controller", bootstrapController, "remove-controller", "--controller-id", controllerID, "--controller-directory-id", directoryId}
 	log.Printf("[kafka-agent] exec %s %s", tool, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Env = a.kafkaEnv()
@@ -843,6 +860,24 @@ type kafkaInfo struct {
 	maxLag   int64
 }
 
+type MetaReplication struct {
+	Raw  string
+	Rows []MetaReplicationRow
+	Lags map[string]int64
+	// MaxLag is the largest Lag value seen in Rows (or extracted from Raw).
+	MaxLag int64
+}
+
+type MetaReplicationRow struct {
+	NodeID                int64
+	DirectoryID           string
+	LogEndOffset          int64
+	Lag                   int64
+	LastFetchTimestamp    int64
+	LastCaughtUpTimestamp int64
+	Status                string
+}
+
 func (a *Agent) detectKafkaInfo(ctx context.Context) kafkaInfo {
 	bs := a.cfg.ControllerAddr
 	if bs == "" {
@@ -856,9 +891,7 @@ func (a *Agent) detectKafkaInfo(ctx context.Context) kafkaInfo {
 	statusCmd.Env = a.kafkaEnv()
 	statusOut, statusErr := statusCmd.CombinedOutput()
 
-	replicationCmd := exec.CommandContext(ctx, tool, "--bootstrap-controller", bs, "describe", "--replication")
-	replicationCmd.Env = a.kafkaEnv()
-	replicationOut, _ := replicationCmd.CombinedOutput()
+	replication, _ := a.metaDecribeReplication(ctx, bs)
 
 	leader := extractFirstDigits(string(statusOut))
 	role := ""
@@ -872,8 +905,7 @@ func (a *Agent) detectKafkaInfo(ctx context.Context) kafkaInfo {
 			}
 		}
 	}
-	lags, maxLag := extractReplicationLag(string(replicationOut))
-	return kafkaInfo{role: role, leaderID: leader, lags: lags, maxLag: maxLag}
+	return kafkaInfo{role: role, leaderID: leader, lags: replication.Lags, maxLag: replication.MaxLag}
 }
 
 func (a *Agent) setProgress(m map[string]any) {
@@ -1010,6 +1042,34 @@ func extractFirstDigits(s string) string {
 	return ""
 }
 
+func (a *Agent) metaDecribeReplication(ctx context.Context, bootstrapController string) (MetaReplication, error) {
+	res := MetaReplication{
+		Lags: map[string]int64{},
+	}
+	bs := strings.TrimSpace(bootstrapController)
+	if bs == "" {
+		bs = strings.TrimSpace(a.cfg.ControllerAddr)
+	}
+	if bs == "" {
+		return res, fmt.Errorf("bootstrap controller required for replication describe")
+	}
+	tool := filepath.Join(a.cfg.KafkaBinDir, "kafka-metadata-quorum.bat")
+	cmd := exec.CommandContext(ctx, tool, "--bootstrap-controller", bs, "describe", "--replication")
+	cmd.Env = a.kafkaEnv()
+	out, err := cmd.CombinedOutput()
+	res.Raw = string(out)
+	res.Rows, err = parseMetaReplicationRows(res.Raw)
+	if err != nil {
+		return res, fmt.Errorf("parse replication rows: %w", err)
+	}
+	res.Lags, res.MaxLag = extractReplicationLag(res.Raw)
+	if err != nil {
+		return res, fmt.Errorf("describe replication via %s: %w", bs, err)
+	}
+	log.Printf("[kafka-agent] replication describe output:\n%s", string(out))
+	return res, nil
+}
+
 func extractReplicationLag(s string) (map[string]int64, int64) {
 	lags := map[string]int64{}
 	var maxLag int64
@@ -1030,4 +1090,88 @@ func extractReplicationLag(s string) (map[string]int64, int64) {
 		}
 	}
 	return lags, maxLag
+}
+
+func parseMetaReplicationRows(s string) ([]MetaReplicationRow, error) {
+	var result []MetaReplicationRow
+
+	scanner := bufio.NewScanner(strings.NewReader(s))
+
+	headerSeen := false
+
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+
+		// Skip empty lines
+		if line == "" {
+			continue
+		}
+
+		// Skip log noise (log4j, ERROR, timestamps, etc.)
+		if strings.Contains(line, "ERROR") ||
+			strings.HasPrefix(line, "202") {
+			continue
+		}
+
+		// Detect header
+		if strings.HasPrefix(line, "NodeId") {
+			headerSeen = true
+			continue
+		}
+
+		if !headerSeen {
+			continue
+		}
+
+		// Split by whitespace (Kafka output is column-aligned)
+		fields := strings.Fields(line)
+		if len(fields) < 7 {
+			return nil, fmt.Errorf("invalid replication line: %q", line)
+		}
+
+		nodeID, err := strconv.Atoi(fields[0])
+		if err != nil {
+			return nil, fmt.Errorf("invalid NodeId in line %q: %w", line, err)
+		}
+
+		logEndOffset, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid LogEndOffset in line %q: %w", line, err)
+		}
+
+		lag, err := strconv.ParseInt(fields[3], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Lag in line %q: %w", line, err)
+		}
+
+		lastFetchTs, err := strconv.ParseInt(fields[4], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid LastFetchTimestamp in line %q: %w", line, err)
+		}
+
+		lastCaughtUpTs, err := strconv.ParseInt(fields[5], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid LastCaughtUpTimestamp in line %q: %w", line, err)
+		}
+
+		result = append(result, MetaReplicationRow{
+			NodeID:                int64(nodeID),
+			DirectoryID:           fields[1],
+			LogEndOffset:          logEndOffset,
+			Lag:                   lag,
+			LastFetchTimestamp:    lastFetchTs,
+			LastCaughtUpTimestamp: lastCaughtUpTs,
+			Status:                fields[6],
+		})
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
+	if !headerSeen {
+		return nil, fmt.Errorf("replication header not found in output")
+	}
+
+	return result, nil
 }

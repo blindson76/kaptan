@@ -260,8 +260,18 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 			dirIDFromSpec[k] = v
 		}
 	}
+	for k, v := range spec.KafkaControllerDirectoryIDs {
+		if k != "" && v != "" {
+			dirIDFromSpec[k] = v
+		}
+	}
 	memberIDFromSpec := map[string]string{}
 	for k, v := range old.KafkaMemberIDs {
+		if k != "" && v != "" {
+			memberIDFromSpec[k] = v
+		}
+	}
+	for k, v := range spec.KafkaMemberIDs {
 		if k != "" && v != "" {
 			memberIDFromSpec[k] = v
 		}
@@ -269,6 +279,8 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	added, removed, surrendered := diffMembers(old.Members, spec.Members)
 	log.Printf("Diff: added:%v removed:%v surrendered:%v", added, removed, surrendered)
+	log.Printf("spec: %v, oldspec: %v", spec, old)
+	log.Printf("memberIDFromSpec: %v, dirIDFromSpec: %v, spec.Members: %v", memberIDFromSpec, dirIDFromSpec, spec.Members)
 
 	coordinatorID := ""
 	bootstrap := ""
@@ -286,9 +298,8 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		log.Printf("[kafka-orders] removing member %s, members:%v dirs:%v", id, memberIDFromSpec, dirIDFromSpec)
 		for _, sId := range surrendered {
 			if err := p.issueAndWait(ctx, orders.KindKafka, sId, orders.ActionRemoveController, epoch, map[string]any{
-				"bootstrap-controller":    ctrlAddrByID[sId],
-				"controller-id":           memberIDFromSpec[id],
-				"controller-directory-id": dirIDFromSpec[id],
+				"bootstrap-controller": ctrlAddrByID[sId],
+				"controller-id":        memberIDFromSpec[id],
 			}); err == nil {
 				log.Printf("[kafka-orders] surrendered member %s removed as voter from %s", id, sId)
 				break

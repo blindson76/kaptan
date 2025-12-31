@@ -327,9 +327,9 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		if eligible[i].KafkaStorageID != "" {
 			dirIDs[eligible[i].ID] = eligible[i].KafkaStorageID
 		}
-		if eligible[i].KafkaNodeID != "" {
-			memberIDs[eligible[i].ID] = eligible[i].KafkaNodeID
-		}
+	}
+	for _, cn := range c.candidates {
+		memberIDs[cn.ID] = cn.KafkaNodeID
 	}
 	c.specVersion++
 	bootstrapControllers := make([]string, 0, len(members))
@@ -360,6 +360,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		KafkaControllerDirectoryIDs: dirIDs,
 		KafkaMemberIDs:              memberIDs,
 	}
+	log.Printf("[kafka] publishing spec: %+v", spec)
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
 	if c.provider != nil {
@@ -493,6 +494,7 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	c.specVersion++
 	bootstrapControllers := make([]string, 0, len(members))
 	bootstrapServers := make([]string, 0, len(members))
+	membersId := map[string]string{}
 	// Build controller.quorum.bootstrap.servers from selected candidates controller addresses
 	for _, id := range members {
 		for _, cr := range eligible {
@@ -506,6 +508,9 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 			}
 		}
 	}
+	for _, id := range c.candidates {
+		membersId[id.ID] = id.KafkaNodeID
+	}
 
 	spec := types.ReplicaSpec{
 		Kind:                        types.CandidateKafka,
@@ -517,6 +522,7 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		KafkaBootstrapControllers:   bootstrapControllers,
 		KafkaBootstrapServers:       bootstrapServers,
 		KafkaControllerDirectoryIDs: dirIDs,
+		KafkaMemberIDs:              membersId,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
