@@ -836,6 +836,7 @@ func (a *Agent) kafkaHeartbeat(ctx context.Context) {
 				noteRole = "startup"
 			}
 			note := a.buildServiceNote(noteRole, info.leaderID, info.lags, info.maxLag)
+			log.Printf("[kafka-agent] heartbeat role=%s leader=%s maxLag=%d, note=%s", role, info.leaderID, info.maxLag, note)
 			svc := a.getActiveService()
 			if a.reg != nil && svc.CheckID != "" {
 				status := servicereg.StatusWarning
