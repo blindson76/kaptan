@@ -369,7 +369,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 }
 
 func (c *Controller) specAllHealthy() bool {
-	log.Printf("[kafka-controller] check health spec:%v, health:%v", c.spec, c.health)
+	// log.Printf("[kafka-controller] check health spec:%v, health:%v", c.spec, c.health)
 	if len(c.spec.Members) == 0 {
 		return false
 	}

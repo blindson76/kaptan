@@ -347,9 +347,14 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	if len(added) > 0 && existingCluster {
 		id := added[0]
+		var brokerList []string
+		for _, v := range spec.KafkaMemberIDs {
+			brokerList = append(brokerList, v)
+		}
 		if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionReassignPartitions, epoch, map[string]any{
 			"bootstrap-servers":     spec.KafkaBootstrapServers,
 			"bootstrap-controllers": spec.KafkaBootstrapControllers,
+			"broker-list":           strings.Join(brokerList, ","),
 		}); err != nil {
 			log.Printf("[kafka-orders] failed to start reassignpartitions %s: %v", id, err)
 			return err

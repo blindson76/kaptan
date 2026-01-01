@@ -230,6 +230,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 		dirID, _ := ord.Payload["controller-directory-id"].(string)
 		err = a.removeController(ctx, bs, cid, dirID)
 	case orders.ActionReassignPartitions:
+		brokerList, _ := ord.Payload["broker-list"].(string)
 		bssAny, _ := ord.Payload["bootstrap-servers"].([]any)
 		bscAny, _ := ord.Payload["bootstrap-controllers"].([]any)
 		bss := make([]string, 0, len(bssAny))
@@ -245,7 +246,7 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 			}
 		}
 		log.Printf("[kafka-agent] reassign partitions ord:%v bootstrap servers: %+v bootstrap controllers: %+v", ord, bss, bsc)
-		err = a.reassignPartitions(ctx, strings.Join(bss, ","), strings.Join(bsc, ","))
+		err = a.reassignPartitions(ctx, strings.Join(bss, ","), strings.Join(bsc, ","), brokerList)
 	}
 	if err != nil {
 		ack.Ok = false
@@ -704,7 +705,7 @@ func (a *Agent) removeController(ctx context.Context, bootstrapController, contr
 	return cmd.Run()
 }
 
-func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string, bootstrapControllers string) error {
+func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string, bootstrapControllers string, brokerList string) error {
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "start", "done": false, "updatedAt": time.Now().Format(time.RFC3339)})
 	defer a.clearProgress()
 	if err := a.waitQuorumReady(ctx, bootstrapControllers, 90*time.Second); err != nil {
@@ -748,10 +749,6 @@ func (a *Agent) reassignPartitions(ctx context.Context, bootstrapServer string, 
 	topicsPath := filepath.Join(a.cfg.WorkDir, "replctl-topics.json")
 	_ = os.WriteFile(topicsPath, []byte(tj), 0o644)
 
-	brokerList := a.cfg.NodeID
-	if brokerList == "" {
-		brokerList = "1,2,3"
-	}
 	a.setProgress(map[string]any{"op": "reassign_partitions", "phase": "generate_plan", "done": false, "topics": len(topics), "updatedAt": time.Now().Format(time.RFC3339)})
 	genArgs := []string{"--bootstrap-server", bootstrapServer, "--broker-list", brokerList, "--topics-to-move-json-file", topicsPath, "--generate"}
 	log.Printf("[kafka-agent] exec %s %s", reassignTool, strings.Join(genArgs, " "))
