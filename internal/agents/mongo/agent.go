@@ -133,11 +133,15 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 		}
 	case orders.ActionStart:
 		repl := a.cfg.ReplSetName
+		wait := false
 		if v, ok := ord.Payload["replSetName"].(string); ok && v != "" {
 			repl = v
 		}
+		if v, ok := ord.Payload["wait"].(bool); ok && v {
+			wait = v
+		}
 		log.Printf("[mongo-agent] received order action=%s epoch=%d replSet=%s", ord.Action, ord.Epoch, repl)
-		err = a.startMongod(ctx, repl)
+		err = a.startMongod(ctx, repl, wait)
 	case orders.ActionStop:
 		log.Printf("[mongo-agent] received order action=%s epoch=%d", ord.Action, ord.Epoch)
 		err = a.shutdown(ctx)
@@ -205,7 +209,7 @@ func (a *Agent) recreateAdminUser(ctx context.Context) error {
 	return err
 }
 
-func (a *Agent) startMongod(ctx context.Context, repl string) error {
+func (a *Agent) startMongod(ctx context.Context, repl string, wait bool) error {
 	keyFilePath, err := a.ensureKeyFile()
 	if err != nil {
 		return err
@@ -243,6 +247,9 @@ func (a *Agent) startMongod(ctx context.Context, repl string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	log.Printf("[mongo-agent] waiting for mongod to accept connections on %s:%d", a.connectHost(), nzInt(a.cfg.Port, 27017))
+	if !wait {
+		return nil
+	}
 	if err := a.waitMongodReady(waitCtx); err != nil {
 		return fmt.Errorf("mongod did not become ready: %w", err)
 	}
@@ -283,6 +290,12 @@ func (a *Agent) waitMongodReady(ctx context.Context) error {
 		if err == nil {
 			pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			err = cli.Database("admin").RunCommand(pingCtx, bson.D{{Key: "ping", Value: 1}}).Err()
+			if err == nil {
+				log.Printf("[mongo-agent] PING OK:)")
+			} else {
+				log.Printf("[mongo-agent] PING error")
+			}
+			time.Sleep(5 * time.Second)
 			cancel()
 			_ = cli.Disconnect(context.Background())
 		}

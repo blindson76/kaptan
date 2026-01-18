@@ -91,21 +91,33 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	_, removed, _ := diffMembers(prev.Members, spec.Members)
 
+	wipeTasks := make([]orderTask, 0)
+	for id, v := range spec.MongoWipeMembers {
+		if v {
+			wipeTasks = append(wipeTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
+			})
+		}
+	}
+
+	if err := runParallel(ctx, wipeTasks); err != nil {
+		log.Printf("[orders] mongo wipe error:%v", err)
+		return err
+	}
 	startTasks := make([]orderTask, 0, len(spec.Members))
 	for _, id := range spec.Members {
 		id := id
 		startTasks = append(startTasks, func(ctx context.Context) error {
-			if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
-				_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
-			}
 			return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStart, epoch, map[string]any{
 				"replSetName": spec.MongoReplicaSetID,
+				"wait":        true,
 			})
 		})
 	}
 	if err := runParallel(ctx, startTasks); err != nil {
 		return err
 	}
+	log.Printf("[orders] mongo start done")
 
 	if p.MongoHealthPrefix != "" {
 		healthByID = loadHealthByID(ctx, p.KV, p.MongoHealthPrefix)
