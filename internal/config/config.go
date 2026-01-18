@@ -208,10 +208,12 @@ type ServiceStartSpec struct {
 }
 
 type ServiceDef struct {
-	Name      string   `yaml:"name"`
-	Instances int      `yaml:"instances"` // should be 2
-	Tags      []string `yaml:"tags"`
-	TTL       string   `yaml:"ttl"`
+	Name              string   `yaml:"name"`
+	Instances         int      `yaml:"instances"` // should be 2
+	Tags              []string `yaml:"tags"`
+	TTL               string   `yaml:"ttl"`
+	DependsOn         []string `yaml:"depends_on"`
+	DependsMinPassing int      `yaml:"depends_min_passing"`
 
 	Start ServiceStartSpec `yaml:"start"`
 }

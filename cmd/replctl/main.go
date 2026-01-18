@@ -336,13 +336,15 @@ func main() {
 		svcDefs := make([]sctl.ServiceDef, 0, len(cfg.Tasks.ServicesController.Services))
 		for _, s := range cfg.Tasks.ServicesController.Services {
 			svcDefs = append(svcDefs, sctl.ServiceDef{
-				Name:      s.Name,
-				Instances: s.Instances,
-				Tags:      s.Tags,
-				TTL:       s.TTL,
-				StartCmd:  s.Start.Cmd,
-				StartArgs: s.Start.Args,
-				WorkDir:   s.Start.WorkDir,
+				Name:              s.Name,
+				Instances:         s.Instances,
+				Tags:              s.Tags,
+				TTL:               s.TTL,
+				DependsOn:         s.DependsOn,
+				DependsMinPassing: s.DependsMinPassing,
+				StartCmd:          s.Start.Cmd,
+				StartArgs:         s.Start.Args,
+				WorkDir:           s.Start.WorkDir,
 			})
 		}
 		ctl := sctl.New(sctl.Config{

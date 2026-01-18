@@ -33,13 +33,15 @@ type Config struct {
 }
 
 type ServiceDef struct {
-	Name      string
-	Instances int
-	Tags      []string
-	TTL       string
-	StartCmd  string
-	StartArgs []string
-	WorkDir   string
+	Name               string
+	Instances          int
+	Tags               []string
+	TTL                string
+	DependsOn          []string
+	DependsMinPassing  int
+	StartCmd           string
+	StartArgs          []string
+	WorkDir            string
 }
 
 type Controller struct {
@@ -195,6 +197,10 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 	n := len(c.candidates)
 	firstNext := 0
 	for si, svc := range c.cfg.Services {
+		if !c.depsReadyForService(svc) {
+			log.Printf("[services] waiting service dependencies service=%s deps=%v", svc.Name, svc.DependsOn)
+			continue
+		}
 		inst := svc.Instances
 		if inst <= 0 {
 			inst = 2
@@ -248,6 +254,30 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 			log.Printf("[services] not enough candidates to place service=%s need=%d active=%d total=%d", svc.Name, need, activeCount, n)
 		}
 	}
+}
+
+func (c *Controller) depsReadyForService(svc ServiceDef) bool {
+	if len(svc.DependsOn) == 0 || c.consul == nil {
+		return true
+	}
+	minPassing := svc.DependsMinPassing
+	if minPassing <= 0 {
+		minPassing = 1
+	}
+	for _, dep := range svc.DependsOn {
+		if dep == "" {
+			continue
+		}
+		ents, _, err := c.consul.Health().Service(dep, "", true, nil)
+		if err != nil {
+			log.Printf("[services] dependency health error service=%s dep=%s err=%v", svc.Name, dep, err)
+			return false
+		}
+		if len(ents) < minPassing {
+			return false
+		}
+	}
+	return true
 }
 
 func (c *Controller) activeServiceNodes(ctx context.Context, svcName string) (map[string]bool, int, bool) {

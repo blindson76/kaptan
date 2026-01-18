@@ -101,6 +101,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -116,6 +118,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -146,6 +150,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -161,6 +167,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -176,6 +184,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -191,6 +201,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -206,6 +218,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -221,6 +235,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -236,6 +252,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -266,6 +284,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -281,6 +301,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -296,6 +318,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -326,6 +350,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -341,6 +367,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -356,6 +384,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -371,6 +401,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -386,6 +418,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -401,6 +435,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -416,6 +452,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -431,6 +469,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -446,6 +486,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -476,6 +518,8 @@ tasks:
         instances: 2
         tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
           cmd: 'java.exe'
           args: [
@@ -493,3 +537,4 @@ tasks:
     orders_prefix: 'orders/services'
     ack_prefix: 'acks/services'
     service_address: '${env.CSB_IP}'
+
