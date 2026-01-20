@@ -8,6 +8,7 @@ const (
 	KindMongo   Kind = "mongo"
 	KindKafka   Kind = "kafka"
 	KindService Kind = "service"
+	KindHMI     Kind = "hmi"
 )
 
 type Action string

@@ -11,10 +11,12 @@ import (
 	"time"
 
 	capi "github.com/hashicorp/consul/api"
+	hmiagent "github.com/umitbozkurt/consul-replctl/internal/agents/hmi"
 	kafkaagent "github.com/umitbozkurt/consul-replctl/internal/agents/kafka"
 	mongoagent "github.com/umitbozkurt/consul-replctl/internal/agents/mongo"
 	serviceagent "github.com/umitbozkurt/consul-replctl/internal/agents/service"
 	"github.com/umitbozkurt/consul-replctl/internal/config"
+	"github.com/umitbozkurt/consul-replctl/internal/controllers/hmi"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/kafka"
 	mctl "github.com/umitbozkurt/consul-replctl/internal/controllers/mongo"
 	sctl "github.com/umitbozkurt/consul-replctl/internal/controllers/services"
@@ -326,6 +328,30 @@ func main() {
 		}()
 	}
 
+	// HMI agent (runs HMI roles based on Consul orders)
+	if cfg.Tasks.HmiAgent.Enabled {
+		if cfg.Tasks.HmiAgent.AgentID == "" {
+			cfg.Tasks.HmiAgent.AgentID = nodeName
+		}
+		if cfg.Tasks.HmiAgent.OrdersPrefix == "" {
+			cfg.Tasks.HmiAgent.OrdersPrefix = "orders/hmi"
+		}
+		if cfg.Tasks.HmiAgent.AckPrefix == "" {
+			cfg.Tasks.HmiAgent.AckPrefix = "acks/hmi"
+		}
+		ag := hmiagent.New(hmiagent.Config{
+			AgentID:      cfg.Tasks.HmiAgent.AgentID,
+			OrdersPrefix: cfg.Tasks.HmiAgent.OrdersPrefix,
+			AckPrefix:    cfg.Tasks.HmiAgent.AckPrefix,
+		}, st)
+		go func() {
+			log.Printf("%s hmi_agent started", logPrefix)
+			if err := ag.Run(ctx); err != nil {
+				log.Printf("%s hmi_agent stopped: %v", logPrefix, err)
+			}
+		}()
+	}
+
 	// Services controller: spreads services across nodes and ensures 2 instances (master/slave).
 	if cfg.Tasks.ServicesController.Enabled {
 		id := cfg.Tasks.ServicesController.ControllerID
@@ -363,6 +389,52 @@ func main() {
 			log.Printf("%s services_controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
 				log.Printf("%s services_controller stopped: %v", logPrefix, err)
+			}
+		}()
+	}
+
+	// HMI controller: assigns roles per worker based on KV assignments.
+	if cfg.Tasks.HmiController.Enabled {
+		id := cfg.Tasks.HmiController.ControllerID
+		if id == "" {
+			id = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.HmiController.InstanceNumber)
+		}
+		roleDefs := make([]hmi.RoleDef, 0, len(cfg.Tasks.HmiController.Roles))
+		for _, r := range cfg.Tasks.HmiController.Roles {
+			roleDefs = append(roleDefs, hmi.RoleDef{
+				Name:         r.Name,
+				StartCmd:     r.Start.Cmd,
+				StartArgs:    r.Start.Args,
+				StartWorkDir: r.Start.WorkDir,
+				StopCmd:      r.Stop.Cmd,
+				StopArgs:     r.Stop.Args,
+				StopWorkDir:  r.Stop.WorkDir,
+			})
+		}
+		defaultAssignments := make([]hmi.Assignment, 0, len(cfg.Tasks.HmiController.DefaultAssignments))
+		for _, a := range cfg.Tasks.HmiController.DefaultAssignments {
+			defaultAssignments = append(defaultAssignments, hmi.Assignment{
+				WorkerID: a.WorkerID,
+				Role:     a.Role,
+			})
+		}
+		ctl := hmi.New(hmi.Config{
+			ControllerID:       id,
+			LockKey:            cfg.Tasks.HmiController.LockKey,
+			StateKey:           cfg.Tasks.HmiController.StateKey,
+			AssignmentsPrefix:  cfg.Tasks.HmiController.AssignmentsPrefix,
+			OrdersPrefix:       cfg.Tasks.HmiController.OrdersPrefix,
+			AckPrefix:          cfg.Tasks.HmiController.AckPrefix,
+			ServiceName:        cfg.Tasks.HmiController.ServiceName,
+			AckTimeout:         cfg.Tasks.HmiController.AckTimeout,
+			Roles:              roleDefs,
+			DefaultAssignments: defaultAssignments,
+			OrderHistoryKeep:   cfg.Consul.OrderHistoryKeep,
+		}, st, locker)
+		go func() {
+			log.Printf("%s hmi_controller started", logPrefix)
+			if err := ctl.Run(ctx); err != nil {
+				log.Printf("%s hmi_controller stopped: %v", logPrefix, err)
 			}
 		}()
 	}

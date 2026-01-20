@@ -499,7 +499,16 @@ func (p Provider) issueReconfigTargets(ctx context.Context, targets []string, ep
 		}
 		if isNotWritablePrimary(err) {
 			lastErr = err
-			log.Printf("[orders] reconfigure target=%s not writable primary; trying next", target)
+			log.Printf("[orders] reconfigure target=%s not writable primary; trying forced", target)
+			forcedPayload := make(map[string]any)
+			for k, v := range payload {
+				forcedPayload[k] = v
+			}
+			forcedPayload["force"] = true
+			err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, forcedPayload)
+			if err == nil {
+				return nil
+			}
 			continue
 		}
 		return err

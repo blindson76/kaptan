@@ -531,6 +531,47 @@ tasks:
           ]
           work_dir: '${env.CMS_ROOT}'
 
+  hmi_controller:
+    enabled: false
+    instance_number: 1
+    controller_id: ''
+    lock_key: 'locks/hmi-controller'
+    state_key: 'state/hmi-controller'
+    assignments_prefix: 'hmi/assignments'
+    orders_prefix: 'orders/hmi'
+    ack_prefix: 'acks/hmi'
+    service_name: 'hmi'
+    ack_timeout: '30s'
+    default_assignments:
+      - worker_id: 'Client-1'
+        role: 'c2is'
+      - worker_id: 'Client-2'
+        role: 'c2is'
+      - worker_id: 'Client-3'
+        role: 'c2is'
+      - worker_id: 'Client-4'
+        role: 'c2is'
+      - worker_id: 'Client-5'
+        role: 'c2is'
+      - worker_id: 'Client-6'
+        role: 'c2is'
+    roles:
+      - name: 'c2is'
+        start:
+          cmd: 'start-c2is.bat'
+          args: []
+          work_dir: '${env.CMS_ROOT}'
+        stop:
+          cmd: 'stop-c2is.bat'
+          args: []
+          work_dir: '${env.CMS_ROOT}'
+
+  hmi_agent:
+    enabled: false
+    agent_id: '${env.NODE_NAME}'
+    orders_prefix: 'orders/hmi'
+    ack_prefix: 'acks/hmi'
+
   services_agent:
     enabled: true
     agent_id: '${env.NODE_NAME}'

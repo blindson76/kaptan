@@ -361,6 +361,8 @@ controller.quorum.bootstrap.servers=%s
 default.replication.factor=3
 min.insync.replicas=2
 
+num.partitions=3
+
 # (optional but recommended)
 unclean.leader.election.enable=false
 log.dirs=%s
