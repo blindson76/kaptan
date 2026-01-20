@@ -17,9 +17,10 @@ import (
 )
 
 type Config struct {
-	AgentID      string
-	OrdersPrefix string
-	AckPrefix    string
+	AgentID       string
+	OrdersPrefix  string
+	AckPrefix     string
+	WorkersPrefix string
 }
 
 type Agent struct {
@@ -36,6 +37,12 @@ type Agent struct {
 type procHandle struct {
 	cmd     *exec.Cmd
 	logFile *os.File
+}
+
+type WorkerStatus struct {
+	ID        string    `json:"id"`
+	Host      string    `json:"host,omitempty"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 type lastOrder struct {
@@ -55,6 +62,7 @@ func New(cfg Config, kv store.KV) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	a.publishPresence(ctx)
 	ch := a.kv.WatchPrefixJSON(ctx, a.cfg.OrdersPrefix, func() any { return &[]orders.Order{} })
 	for {
 		select {
@@ -94,6 +102,18 @@ func (a *Agent) Run(ctx context.Context) error {
 				a.execute(ctx, latestByService[name])
 			}
 		}
+	}
+}
+
+func (a *Agent) publishPresence(ctx context.Context) {
+	if a.kv == nil || a.cfg.WorkersPrefix == "" || a.cfg.AgentID == "" {
+		return
+	}
+	host, _ := os.Hostname()
+	status := WorkerStatus{ID: a.cfg.AgentID, Host: host, StartedAt: time.Now()}
+	key := fmt.Sprintf("%s/%s", a.cfg.WorkersPrefix, a.cfg.AgentID)
+	if err := a.kv.PutJSONEphemeral(ctx, key, a.cfg.AgentID, &status); err != nil {
+		log.Printf("[hmi-agent] publish presence failed key=%s err=%v", key, err)
 	}
 }
 

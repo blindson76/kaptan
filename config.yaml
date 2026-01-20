@@ -538,10 +538,13 @@ tasks:
     lock_key: 'locks/hmi-controller'
     state_key: 'state/hmi-controller'
     assignments_prefix: 'hmi/assignments'
+    workers_prefix: 'hmi/workers'
     orders_prefix: 'orders/hmi'
     ack_prefix: 'acks/hmi'
     service_name: 'hmi'
     ack_timeout: '30s'
+    wait_for: ['mongo','kafka']
+    min_passing: 3
     default_assignments:
       - worker_id: 'Client-1'
         role: 'c2is'
@@ -571,6 +574,7 @@ tasks:
     agent_id: '${env.NODE_NAME}'
     orders_prefix: 'orders/hmi'
     ack_prefix: 'acks/hmi'
+    workers_prefix: 'hmi/workers'
 
   services_agent:
     enabled: true

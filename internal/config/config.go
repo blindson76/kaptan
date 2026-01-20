@@ -277,18 +277,23 @@ type HmiControllerConfig struct {
 	StateKey string `yaml:"state_key"`
 
 	AssignmentsPrefix string        `yaml:"assignments_prefix"`
+	WorkersPrefix     string        `yaml:"workers_prefix"`
 	OrdersPrefix      string        `yaml:"orders_prefix"`
 	AckPrefix         string        `yaml:"ack_prefix"`
 	ServiceName       string        `yaml:"service_name"`
 	AckTimeout        time.Duration `yaml:"ack_timeout"`
+
+	WaitFor    []string `yaml:"wait_for"`
+	MinPassing int      `yaml:"min_passing"`
 
 	Roles              []HmiRoleDef    `yaml:"roles"`
 	DefaultAssignments []HmiAssignment `yaml:"default_assignments"`
 }
 
 type HmiAgentConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	AgentID      string `yaml:"agent_id"`
-	OrdersPrefix string `yaml:"orders_prefix"`
-	AckPrefix    string `yaml:"ack_prefix"`
+	Enabled       bool   `yaml:"enabled"`
+	AgentID       string `yaml:"agent_id"`
+	OrdersPrefix  string `yaml:"orders_prefix"`
+	AckPrefix     string `yaml:"ack_prefix"`
+	WorkersPrefix string `yaml:"workers_prefix"`
 }

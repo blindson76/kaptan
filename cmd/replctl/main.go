@@ -339,10 +339,14 @@ func main() {
 		if cfg.Tasks.HmiAgent.AckPrefix == "" {
 			cfg.Tasks.HmiAgent.AckPrefix = "acks/hmi"
 		}
+		if cfg.Tasks.HmiAgent.WorkersPrefix == "" {
+			cfg.Tasks.HmiAgent.WorkersPrefix = "hmi/workers"
+		}
 		ag := hmiagent.New(hmiagent.Config{
-			AgentID:      cfg.Tasks.HmiAgent.AgentID,
-			OrdersPrefix: cfg.Tasks.HmiAgent.OrdersPrefix,
-			AckPrefix:    cfg.Tasks.HmiAgent.AckPrefix,
+			AgentID:       cfg.Tasks.HmiAgent.AgentID,
+			OrdersPrefix:  cfg.Tasks.HmiAgent.OrdersPrefix,
+			AckPrefix:     cfg.Tasks.HmiAgent.AckPrefix,
+			WorkersPrefix: cfg.Tasks.HmiAgent.WorkersPrefix,
 		}, st)
 		go func() {
 			log.Printf("%s hmi_agent started", logPrefix)
@@ -423,14 +427,17 @@ func main() {
 			LockKey:            cfg.Tasks.HmiController.LockKey,
 			StateKey:           cfg.Tasks.HmiController.StateKey,
 			AssignmentsPrefix:  cfg.Tasks.HmiController.AssignmentsPrefix,
+			WorkersPrefix:      cfg.Tasks.HmiController.WorkersPrefix,
 			OrdersPrefix:       cfg.Tasks.HmiController.OrdersPrefix,
 			AckPrefix:          cfg.Tasks.HmiController.AckPrefix,
 			ServiceName:        cfg.Tasks.HmiController.ServiceName,
 			AckTimeout:         cfg.Tasks.HmiController.AckTimeout,
+			WaitFor:            cfg.Tasks.HmiController.WaitFor,
+			MinPassing:         cfg.Tasks.HmiController.MinPassing,
 			Roles:              roleDefs,
 			DefaultAssignments: defaultAssignments,
 			OrderHistoryKeep:   cfg.Consul.OrderHistoryKeep,
-		}, st, locker)
+		}, st, locker, rawCli)
 		go func() {
 			log.Printf("%s hmi_controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
