@@ -157,6 +157,20 @@ func (a *Agent) updateServiceRegistration(ctx context.Context, spec types.Replic
 		slotID := fmt.Sprintf("kafka-%d", slot)
 		newReg.ID = slotID
 		newReg.CheckID = fmt.Sprintf("check:%s", slotID)
+		if slotID != "" {
+			tags := append([]string{}, newReg.Tags...)
+			hasSlotTag := false
+			for _, t := range tags {
+				if t == slotID {
+					hasSlotTag = true
+					break
+				}
+			}
+			if !hasSlotTag {
+				tags = append(tags, slotID)
+			}
+			newReg.Tags = tags
+		}
 		if activeID == newReg.ID && activeSlot == slot {
 			return
 		}
