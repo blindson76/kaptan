@@ -117,13 +117,26 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 		}
 
 		// Initial/bootstrapping decisions must be based on candidate reports (offline probe).
-		// Health is only used to target the current PRIMARY when doing a (non-force) reconfig.
+		// Health is used to suppress replSetInitiate when a live replica member is already present.
 		specHasReplicaConfig := hasReplicaConfigAfterWipe(spec, candByID)
-		shouldInit := !specHasReplicaConfig
+		hasHealthyReplica := hasHealthyReplicaMember(healthByID)
+		hasHealthReplicaConfig := hasReplicaConfigFromHealth(healthByID, spec.Members)
+		shouldInit := !specHasReplicaConfig && !hasHealthyReplica && !hasHealthReplicaConfig
 		shouldReconfig := false
 		reconfigReasons := []string{}
 
-		if !shouldInit {
+		// If init was suppressed by health data, switch to reconfig path with explanatory reasons.
+		if !shouldInit && !specHasReplicaConfig {
+			if hasHealthyReplica {
+				reconfigReasons = append(reconfigReasons, "healthy replica member detected")
+			}
+			if hasHealthReplicaConfig {
+				reconfigReasons = append(reconfigReasons, "health reports replica config")
+			}
+			shouldReconfig = true
+		}
+
+		if !shouldInit && specHasReplicaConfig {
 			if prevExists && len(prev.Members) > 0 {
 				sameMembers := reflect.DeepEqual(prev.Members, spec.Members)
 				sameSetID := prev.MongoReplicaSetID == spec.MongoReplicaSetID

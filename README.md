@@ -40,7 +40,23 @@ go build ./cmd/replctl
 - Controller publishes a Kafka spec with `KafkaMode=combined` and `KafkaDynamicVoter=true` and sets `KafkaBootstrapServers` from selected members' `controller_addr` (maps to `controller.quorum.bootstrap.servers`).
 - Runtime/provider should use Kafka's metadata quorum tooling (add/remove voters) for replacements.
 
-## Mongo replica set ID mismatch wipe
+## Mongo replica set UUID override
+- Set `tasks.mongo_controller.replica_set_uuid` to pin the desired replica set UUID.
+- Priority: explicit config override > previously published spec UUID > UUID from eligible candidates.
+- Members with a mismatched UUID are marked in `MongoWipeMembers` so the provider can wipe their data dir.
+
+## wait_health grace period (Kafka and Mongo)
+- Both controllers enforce a grace period (`ElectionInterval * 3`, minimum 15 s) after publishing a new spec before triggering reconciliation from `wait_health`.
+- This prevents premature member replacement while nodes are still starting up.
+- After the grace period expires, any persistently unhealthy or absent member in the spec triggers an early move to `reconcile`.
+
+## Kafka replacement spec completeness
+- `KafkaMemberIDs` (node-ID map) and `KafkaControllerDirectoryIDs` (storage-ID map) are both preserved across replacements so the provider always has the full member metadata it needs for voter add/remove operations.
+
+## Mongo replica init guard
+- `replSetInitiate` is suppressed when health reports already show a live healthy replica member (PRIMARY / SECONDARY / ARBITER) or report a replica set config for the desired members, even if the offline candidate probe didn't detect an existing replica config.
+- This prevents disruptive re-initialization during rolling restarts or leader failovers.
+
 - Set `tasks.mongo_controller.replica_set_id` (replica set name).
 - When publishing a spec, controller compares each candidate's `LastSeenReplicaSetID` (from local.system.replset) with `replica_set_id`.
 - If they differ, spec marks that member in `MongoWipeMembers[id]=true` so the provider/runtime can **wipe that member's data dir** before joining the new replica set.

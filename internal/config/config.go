@@ -47,6 +47,7 @@ type MongoControllerConfig struct {
 	HealthPrefix              string        `yaml:"health_prefix"`
 	SpecKey                   string        `yaml:"spec_key"`
 	ReplicaSetID              string        `yaml:"replica_set_id"`
+	ReplicaSetUUID            string        `yaml:"replica_set_uuid"`
 	ElectionInterval          time.Duration `yaml:"election_interval"`
 	InitialSettleDuration     time.Duration `yaml:"initial_settle_duration"`
 	AllowDegradedSingleMember bool          `yaml:"allow_degraded_single_member"`

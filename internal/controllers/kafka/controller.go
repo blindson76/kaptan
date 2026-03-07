@@ -62,9 +62,12 @@ type Controller struct {
 	health     []types.HealthStatus
 
 	spec        types.ReplicaSpec
+	specLoaded  bool
 	specVersion int64
 
-	initialDeadline time.Time
+	initialDeadline       time.Time
+	waitHealthSince       time.Time
+	waitHealthSpecVersion int64
 }
 
 func New(cfg Config, kv store.KV, locker interface {
@@ -180,15 +183,24 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 		OnEntry(func(ctx context.Context, _ ...any) error {
 			log.Printf("[kafka] wait_health: waiting until spec members are healthy")
 			_ = c.loadSpec(ctx)
+			c.resetWaitHealthIfNeeded(time.Now())
 			return nil
+		}).
+		Permit(TrHealth, StReconcile, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return c.needsReplaceWaitHealth()
+		}).
+		Permit(TrTimer, StReconcile, func(context.Context, ...any) bool {
+			_ = c.loadSpec(context.Background())
+			return c.needsReplaceWaitHealth()
 		}).
 		PermitReentry(TrHealth, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.specAllHealthy()
+			return !c.specAllHealthy() && !c.needsReplaceWaitHealth()
 		}).
 		PermitReentry(TrTimer, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
-			return !c.specAllHealthy()
+			return !c.specAllHealthy() && !c.needsReplaceWaitHealth()
 		}).
 		Permit(TrHealth, StMonitor, func(context.Context, ...any) bool {
 			_ = c.loadSpec(context.Background())
@@ -254,6 +266,30 @@ func (c *Controller) initialWindowElapsed(now time.Time) bool {
 	return !now.Before(c.initialDeadline)
 }
 
+func (c *Controller) resetWaitHealthIfNeeded(now time.Time) {
+	if c.waitHealthSince.IsZero() || c.waitHealthSpecVersion != c.specVersion {
+		c.waitHealthSince = now
+		c.waitHealthSpecVersion = c.specVersion
+	}
+}
+
+func (c *Controller) waitHealthGrace() time.Duration {
+	grace := c.cfg.ElectionInterval * 3
+	if grace < 15*time.Second {
+		grace = 15 * time.Second
+	}
+	return grace
+}
+
+func (c *Controller) needsReplaceWaitHealth() bool {
+	now := time.Now()
+	c.resetWaitHealthIfNeeded(now)
+	if now.Sub(c.waitHealthSince) < c.waitHealthGrace() {
+		return false
+	}
+	return c.needsReplace()
+}
+
 func (c *Controller) eligibleCandidates() []types.CandidateReport {
 	out := make([]types.CandidateReport, 0, len(c.candidates))
 	for _, r := range c.candidates {
@@ -307,6 +343,7 @@ func (c *Controller) loadSpec(ctx context.Context) error {
 	}
 	if ok {
 		c.spec = s
+		c.specLoaded = true
 		if s.Version > c.specVersion {
 			c.specVersion = s.Version
 		}
@@ -468,11 +505,18 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	for k, v := range c.spec.KafkaControllerDirectoryIDs {
 		dirIDs[k] = v
 	}
+	memberIDs := map[string]string{}
+	for k, v := range c.spec.KafkaMemberIDs {
+		memberIDs[k] = v
+	}
 	for _, cand := range eligible {
 		if !specSet[cand.ID] {
 			replacement = cand.ID
 			if cand.KafkaStorageID != "" {
 				dirIDs[cand.ID] = cand.KafkaStorageID
+			}
+			if cand.KafkaNodeID != "" {
+				memberIDs[cand.ID] = cand.KafkaNodeID
 			}
 			break
 		}
@@ -507,6 +551,7 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		KafkaDynamicVoter:           true,
 		KafkaBootstrapServers:       bootstrap,
 		KafkaControllerDirectoryIDs: dirIDs,
+		KafkaMemberIDs:              memberIDs,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)

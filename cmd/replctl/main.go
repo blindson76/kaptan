@@ -107,6 +107,7 @@ func main() {
 			HealthPrefix:              cfg.Tasks.MongoController.HealthPrefix,
 			SpecKey:                   cfg.Tasks.MongoController.SpecKey,
 			ReplicaSetID:              cfg.Tasks.MongoController.ReplicaSetID,
+			ReplicaSetUUID:            cfg.Tasks.MongoController.ReplicaSetUUID,
 			ElectionInterval:          cfg.Tasks.MongoController.ElectionInterval,
 			InitialSettleDuration:     cfg.Tasks.MongoController.InitialSettleDuration,
 			AllowDegradedSingleMember: cfg.Tasks.MongoController.AllowDegradedSingleMember,
