@@ -16,6 +16,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/event"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -618,72 +619,132 @@ func (a *Agent) stopServiceRegistration() {
 	a.activeSlot = 0
 }
 
+// probeAndPublishHealth probes the replica set status and publishes the health
+// to both the Consul TTL check and the KV store. It is safe to call concurrently.
+func (a *Agent) probeAndPublishHealth(ctx context.Context) {
+	if a.reg == nil || a.activeService.CheckID == "" {
+		return
+	}
+	state, stateStr, rsid, optime, term, syncSource, ok, prog := a.probeReplStatus(ctx)
+	note := a.buildServiceNote(state, stateStr, rsid, optime, term, syncSource, prog)
+
+	// Map to Consul TTL status.
+	switch state {
+	case 1, 2, 7: // PRIMARY, SECONDARY, ARBITER
+		_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusPassing, note)
+	case 5, 3, 0: // STARTUP2, RECOVERING, STARTUP
+		_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
+	case 9, 8, 6, 10: // ROLLBACK, DOWN, UNKNOWN, REMOVED
+		_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusCritical, note)
+	default:
+		_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
+	}
+
+	log.Printf("[mongo-agent] healthKey=%s role heartbeat state=%d stateStr=%s rsid=%s optime=%s term=%v syncSource=%s ok=%v",
+		a.cfg.HealthKey, state, stateStr, rsid, optime, term, syncSource, ok)
+
+	// Publish health to KV for controller consumption.
+	if a.cfg.HealthKey != "" {
+		healthy := ok && (state == 1 || state == 2 || state == 7) // PRIMARY/SECONDARY/ARBITER considered healthy
+		meta := map[string]string{}
+		if a.activeService.ID != "" {
+			meta["serviceId"] = a.activeService.ID
+		}
+		if a.activeService.CheckID != "" {
+			meta["checkId"] = a.activeService.CheckID
+		}
+		if a.activeService.Address != "" {
+			meta["address"] = a.activeService.Address
+		}
+		if a.activeService.Port > 0 {
+			meta["port"] = fmt.Sprintf("%d", a.activeService.Port)
+		}
+		if len(a.activeService.Tags) > 0 {
+			meta["tags"] = strings.Join(a.activeService.Tags, ",")
+		}
+		h := types.HealthStatus{
+			ID:          a.cfg.AgentID,
+			Healthy:     healthy,
+			Reason:      note,
+			Note:        note,
+			ServiceMeta: meta,
+			UpdatedAt:   time.Now(),
+		}
+		log.Printf("[mongo-agent] publishing health status healthy=%v reason=%s", h.Healthy, h.Reason)
+		if err := a.kv.PutJSON(ctx, a.cfg.HealthKey, &h); err != nil {
+			log.Printf("[mongo-agent] health publish error: %v", err)
+		}
+	}
+}
+
+// startTopologyMonitor starts a long-lived MongoDB client whose ServerMonitor
+// writes to notifyCh whenever the server description changes (e.g. PRIMARY →
+// SECONDARY election, member goes down). The client is disconnected when ctx
+// is cancelled. Errors creating the client are logged and the function returns
+// without writing to notifyCh; the caller's periodic ticker will take over.
+func (a *Agent) startTopologyMonitor(ctx context.Context, notifyCh chan<- struct{}) {
+	notify := func() {
+		select {
+		case notifyCh <- struct{}{}:
+		default: // drop if a notification is already pending
+		}
+	}
+
+	monitor := &event.ServerMonitor{
+		ServerDescriptionChanged: func(e *event.ServerDescriptionChangedEvent) {
+			log.Printf("[mongo-agent] topology: server description changed addr=%s prev=%s new=%s",
+				e.Address, e.PreviousDescription.Kind, e.NewDescription.Kind)
+			notify()
+		},
+		TopologyDescriptionChanged: func(e *event.TopologyDescriptionChangedEvent) {
+			log.Printf("[mongo-agent] topology: topology description changed")
+			notify()
+		},
+	}
+
+	host := a.connectHost()
+	uri := fmt.Sprintf("mongodb://%s:%d/?directConnection=true", host, nzInt(a.cfg.Port, 27017))
+	opts := options.Client().ApplyURI(uri).SetServerMonitor(monitor)
+	if a.cfg.AdminUser != "" {
+		opts.SetAuth(options.Credential{
+			Username:   a.cfg.AdminUser,
+			Password:   a.cfg.AdminPass,
+			AuthSource: "admin",
+		})
+	}
+	cli, err := mongo.Connect(ctx, opts)
+	if err != nil {
+		log.Printf("[mongo-agent] topology monitor: connect error: %v", err)
+		return
+	}
+	// Keep the client alive until the context is cancelled so that the
+	// driver continues to send server heartbeats and topology events.
+	<-ctx.Done()
+	disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = cli.Disconnect(disconnectCtx)
+}
+
 func (a *Agent) roleHeartbeat(ctx context.Context) {
 	log.Printf("[mongo-agent] starting role heartbeat for service check_id=%s", a.activeService.CheckID)
+
+	// topologyCh receives a signal whenever the MongoDB driver detects a
+	// server or topology description change, allowing immediate health
+	// reporting without waiting for the next periodic tick.
+	topologyCh := make(chan struct{}, 1)
+	go a.startTopologyMonitor(ctx, topologyCh)
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-topologyCh:
+			log.Printf("[mongo-agent] topology change detected - reporting health immediately")
+			a.probeAndPublishHealth(ctx)
 		case <-ticker.C:
-			if a.reg == nil || a.activeService.CheckID == "" {
-				continue
-			}
-			state, stateStr, rsid, optime, term, syncSource, ok, prog := a.probeReplStatus(ctx)
-			note := a.buildServiceNote(state, stateStr, rsid, optime, term, syncSource, prog)
-
-			// Map to Consul TTL status
-			switch state {
-			case 1, 2, 7: // PRIMARY, SECONDARY, ARBITER
-				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusPassing, note)
-			case 5, 3, 0: // STARTUP2, RECOVERING, STARTUP
-				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
-			case 9, 8, 6, 10: // ROLLBACK, DOWN, UNKNOWN, REMOVED
-				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusCritical, note)
-			default:
-				if !ok {
-					_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
-				} else {
-					_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
-				}
-			}
-
-			log.Printf("[mongo-agent] healthKey=%s role heartbeat state=%d stateStr=%s rsid=%s optime=%s term=%v syncSource=%s ok=%v",
-				a.cfg.HealthKey, state, stateStr, rsid, optime, term, syncSource, ok)
-
-			// Publish health to KV for controller consumption.
-			if a.cfg.HealthKey != "" {
-				healthy := ok && (state == 1 || state == 2 || state == 7) // PRIMARY/SECONDARY/ARBITER considered healthy
-				meta := map[string]string{}
-				if a.activeService.ID != "" {
-					meta["serviceId"] = a.activeService.ID
-				}
-				if a.activeService.CheckID != "" {
-					meta["checkId"] = a.activeService.CheckID
-				}
-				if a.activeService.Address != "" {
-					meta["address"] = a.activeService.Address
-				}
-				if a.activeService.Port > 0 {
-					meta["port"] = fmt.Sprintf("%d", a.activeService.Port)
-				}
-				if len(a.activeService.Tags) > 0 {
-					meta["tags"] = strings.Join(a.activeService.Tags, ",")
-				}
-				h := types.HealthStatus{
-					ID:          a.cfg.AgentID,
-					Healthy:     healthy,
-					Reason:      note,
-					Note:        note,
-					ServiceMeta: meta,
-					UpdatedAt:   time.Now(),
-				}
-				log.Printf("[mongo-agent] publishing health status healthy=%v reason=%s", h.Healthy, h.Reason)
-				if err := a.kv.PutJSON(ctx, a.cfg.HealthKey, &h); err != nil {
-					log.Printf("[mongo-agent] health publish error: %v", err)
-				}
-			}
+			a.probeAndPublishHealth(ctx)
 		}
 	}
 }
