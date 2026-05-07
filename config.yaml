@@ -539,10 +539,6 @@ tasks:
     state_key: 'state/hmi-controller'
     assignments_prefix: 'hmi/assignments'
     workers_prefix: 'hmi/workers'
-    orders_prefix: 'orders/hmi'
-    ack_prefix: 'acks/hmi'
-    service_name: 'hmi'
-    ack_timeout: '30s'
     wait_for: ['mongo','kafka']
     min_passing: 3
     default_assignments:
@@ -558,6 +554,13 @@ tasks:
         role: 'c2is'
       - worker_id: 'Client-6'
         role: 'c2is'
+
+  hmi_agent:
+    enabled: false
+    agent_id: '${env.NODE_NAME}'
+    assignments_prefix: 'hmi/assignments'
+    workers_prefix: 'hmi/workers'
+    default_stop_timeout: '30s'
     roles:
       - name: 'c2is'
         start:
@@ -568,13 +571,7 @@ tasks:
           cmd: 'stop-c2is.bat'
           args: []
           work_dir: '${env.CMS_ROOT}'
-
-  hmi_agent:
-    enabled: false
-    agent_id: '${env.NODE_NAME}'
-    orders_prefix: 'orders/hmi'
-    ack_prefix: 'acks/hmi'
-    workers_prefix: 'hmi/workers'
+        stop_timeout: '30s'
 
   services_agent:
     enabled: true
@@ -582,4 +579,3 @@ tasks:
     orders_prefix: 'orders/services'
     ack_prefix: 'acks/services'
     service_address: '${env.CSB_IP}'
-

@@ -328,25 +328,38 @@ func main() {
 		}()
 	}
 
-	// HMI agent (runs HMI roles based on Consul orders)
+	// HMI agent: monitors this node's assigned role and runs the corresponding process.
 	if cfg.Tasks.HmiAgent.Enabled {
 		if cfg.Tasks.HmiAgent.AgentID == "" {
 			cfg.Tasks.HmiAgent.AgentID = nodeName
 		}
-		if cfg.Tasks.HmiAgent.OrdersPrefix == "" {
-			cfg.Tasks.HmiAgent.OrdersPrefix = "orders/hmi"
-		}
-		if cfg.Tasks.HmiAgent.AckPrefix == "" {
-			cfg.Tasks.HmiAgent.AckPrefix = "acks/hmi"
+		if cfg.Tasks.HmiAgent.AssignmentsPrefix == "" {
+			cfg.Tasks.HmiAgent.AssignmentsPrefix = "hmi/assignments"
 		}
 		if cfg.Tasks.HmiAgent.WorkersPrefix == "" {
 			cfg.Tasks.HmiAgent.WorkersPrefix = "hmi/workers"
 		}
+		hmiRoles := make(map[string]hmiagent.RoleDef, len(cfg.Tasks.HmiAgent.Roles))
+		for _, r := range cfg.Tasks.HmiAgent.Roles {
+			if r.Name == "" {
+				continue
+			}
+			hmiRoles[r.Name] = hmiagent.RoleDef{
+				StartCmd:     r.Start.Cmd,
+				StartArgs:    r.Start.Args,
+				StartWorkDir: r.Start.WorkDir,
+				StopCmd:      r.Stop.Cmd,
+				StopArgs:     r.Stop.Args,
+				StopWorkDir:  r.Stop.WorkDir,
+				StopTimeout:  r.StopTimeout,
+			}
+		}
 		ag := hmiagent.New(hmiagent.Config{
-			AgentID:       cfg.Tasks.HmiAgent.AgentID,
-			OrdersPrefix:  cfg.Tasks.HmiAgent.OrdersPrefix,
-			AckPrefix:     cfg.Tasks.HmiAgent.AckPrefix,
-			WorkersPrefix: cfg.Tasks.HmiAgent.WorkersPrefix,
+			AgentID:            cfg.Tasks.HmiAgent.AgentID,
+			AssignmentsPrefix:  cfg.Tasks.HmiAgent.AssignmentsPrefix,
+			WorkersPrefix:      cfg.Tasks.HmiAgent.WorkersPrefix,
+			Roles:              hmiRoles,
+			DefaultStopTimeout: cfg.Tasks.HmiAgent.DefaultStopTimeout,
 		}, st)
 		go func() {
 			log.Printf("%s hmi_agent started", logPrefix)
@@ -403,18 +416,6 @@ func main() {
 		if id == "" {
 			id = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.HmiController.InstanceNumber)
 		}
-		roleDefs := make([]hmi.RoleDef, 0, len(cfg.Tasks.HmiController.Roles))
-		for _, r := range cfg.Tasks.HmiController.Roles {
-			roleDefs = append(roleDefs, hmi.RoleDef{
-				Name:         r.Name,
-				StartCmd:     r.Start.Cmd,
-				StartArgs:    r.Start.Args,
-				StartWorkDir: r.Start.WorkDir,
-				StopCmd:      r.Stop.Cmd,
-				StopArgs:     r.Stop.Args,
-				StopWorkDir:  r.Stop.WorkDir,
-			})
-		}
 		defaultAssignments := make([]hmi.Assignment, 0, len(cfg.Tasks.HmiController.DefaultAssignments))
 		for _, a := range cfg.Tasks.HmiController.DefaultAssignments {
 			defaultAssignments = append(defaultAssignments, hmi.Assignment{
@@ -428,15 +429,9 @@ func main() {
 			StateKey:           cfg.Tasks.HmiController.StateKey,
 			AssignmentsPrefix:  cfg.Tasks.HmiController.AssignmentsPrefix,
 			WorkersPrefix:      cfg.Tasks.HmiController.WorkersPrefix,
-			OrdersPrefix:       cfg.Tasks.HmiController.OrdersPrefix,
-			AckPrefix:          cfg.Tasks.HmiController.AckPrefix,
-			ServiceName:        cfg.Tasks.HmiController.ServiceName,
-			AckTimeout:         cfg.Tasks.HmiController.AckTimeout,
 			WaitFor:            cfg.Tasks.HmiController.WaitFor,
 			MinPassing:         cfg.Tasks.HmiController.MinPassing,
-			Roles:              roleDefs,
 			DefaultAssignments: defaultAssignments,
-			OrderHistoryKeep:   cfg.Consul.OrderHistoryKeep,
 		}, st, locker, rawCli)
 		go func() {
 			log.Printf("%s hmi_controller started", logPrefix)

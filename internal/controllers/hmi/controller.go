@@ -9,7 +9,6 @@ import (
 
 	capi "github.com/hashicorp/consul/api"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/common"
-	"github.com/umitbozkurt/consul-replctl/internal/orders"
 	"github.com/umitbozkurt/consul-replctl/internal/store"
 )
 
@@ -20,28 +19,11 @@ type Config struct {
 
 	AssignmentsPrefix string
 	WorkersPrefix     string
-	OrdersPrefix      string
-	AckPrefix         string
-	ServiceName       string
-	AckTimeout        time.Duration
 
 	WaitFor    []string
 	MinPassing int
 
-	Roles              []RoleDef
 	DefaultAssignments []Assignment
-
-	OrderHistoryKeep int
-}
-
-type RoleDef struct {
-	Name         string
-	StartCmd     string
-	StartArgs    []string
-	StartWorkDir string
-	StopCmd      string
-	StopArgs     []string
-	StopWorkDir  string
 }
 
 type Assignment struct {
@@ -68,8 +50,7 @@ type Controller struct {
 	}
 	consul *capi.Client
 
-	roles map[string]RoleDef
-	last  map[string]string
+	last map[string]string
 
 	assignments map[string]string
 	workers     map[string]WorkerStatus
@@ -85,31 +66,11 @@ func New(cfg Config, kv store.KV, locker interface {
 	if cfg.WorkersPrefix == "" {
 		cfg.WorkersPrefix = "hmi/workers"
 	}
-	if cfg.OrdersPrefix == "" {
-		cfg.OrdersPrefix = "orders/hmi"
-	}
-	if cfg.AckPrefix == "" {
-		cfg.AckPrefix = "acks/hmi"
-	}
-	if cfg.ServiceName == "" {
-		cfg.ServiceName = "hmi"
-	}
-	if cfg.AckTimeout == 0 {
-		cfg.AckTimeout = 30 * time.Second
-	}
-	roleMap := map[string]RoleDef{}
-	for _, r := range cfg.Roles {
-		if r.Name == "" {
-			continue
-		}
-		roleMap[r.Name] = r
-	}
 	return &Controller{
 		cfg:         cfg,
 		kv:          kv,
 		locker:      locker,
 		consul:      consulCli,
-		roles:       roleMap,
 		last:        map[string]string{},
 		assignments: map[string]string{},
 		workers:     map[string]WorkerStatus{},
@@ -205,21 +166,9 @@ func (c *Controller) reconcile(ctx context.Context) {
 	}
 
 	for _, id := range sortedKeys(c.last) {
-		role := c.last[id]
 		desiredRole, ok := c.assignments[id]
-		if ok && desiredRole != "" {
+		if ok && desiredRole != "" && c.workerPresent(id) {
 			continue
-		}
-		if !c.workerPresent(id) {
-			delete(c.last, id)
-			delete(c.lastGen, id)
-			continue
-		}
-		if role != "" {
-			if err := c.stopRole(ctx, id, role); err != nil {
-				log.Printf("[hmi] stop role failed worker=%s role=%s err=%v", id, role, err)
-				continue
-			}
 		}
 		delete(c.last, id)
 		delete(c.lastGen, id)
@@ -239,20 +188,6 @@ func (c *Controller) reconcile(ctx context.Context) {
 		if newRole == oldRole && sameGen {
 			continue
 		}
-		def, ok := c.roles[newRole]
-		if !ok {
-			log.Printf("[hmi] unknown role=%s worker=%s", newRole, id)
-			continue
-		}
-		if oldRole != "" && oldRole != newRole {
-			if err := c.stopRole(ctx, id, oldRole); err != nil {
-				log.Printf("[hmi] stop role failed worker=%s role=%s err=%v", id, oldRole, err)
-			}
-		}
-		if err := c.startRole(ctx, id, newRole, def); err != nil {
-			log.Printf("[hmi] start role failed worker=%s role=%s err=%v", id, newRole, err)
-			continue
-		}
 		c.last[id] = newRole
 		if !currentGen.IsZero() {
 			c.lastGen[id] = currentGen
@@ -260,80 +195,6 @@ func (c *Controller) reconcile(ctx context.Context) {
 	}
 
 	c.saveState(ctx)
-}
-
-func (c *Controller) startRole(ctx context.Context, workerID string, role string, def RoleDef) error {
-	payload := map[string]any{
-		"service": c.cfg.ServiceName,
-		"role":    role,
-		"cmd":     def.StartCmd,
-		"args":    def.StartArgs,
-		"workDir": def.StartWorkDir,
-	}
-	epoch := time.Now().UnixNano()
-	return c.issue(ctx, workerID, orders.ActionStart, epoch, payload)
-}
-
-func (c *Controller) stopRole(ctx context.Context, workerID string, role string) error {
-	payload := map[string]any{
-		"service": c.cfg.ServiceName,
-		"role":    role,
-	}
-	if def, ok := c.roles[role]; ok {
-		if def.StopCmd != "" {
-			payload["stopCmd"] = def.StopCmd
-		}
-		if len(def.StopArgs) > 0 {
-			payload["stopArgs"] = def.StopArgs
-		}
-		if def.StopWorkDir != "" {
-			payload["stopWorkDir"] = def.StopWorkDir
-		}
-	}
-	epoch := time.Now().UnixNano()
-	if err := c.issue(ctx, workerID, orders.ActionStop, epoch, payload); err != nil {
-		return err
-	}
-	return c.waitAck(ctx, workerID, orders.ActionStop, epoch)
-}
-
-func (c *Controller) issue(ctx context.Context, workerID string, action orders.Action, epoch int64, payload map[string]any) error {
-	orderKey := fmt.Sprintf("%s/%s/%s", c.cfg.OrdersPrefix, c.cfg.ServiceName, workerID)
-	ord := orders.Order{
-		Kind:     orders.KindHMI,
-		TargetID: workerID,
-		Action:   action,
-		Epoch:    epoch,
-		IssuedAt: time.Now(),
-		Payload:  payload,
-	}
-	log.Printf("[hmi] order publish worker=%s action=%s epoch=%d key=%s payload=%v", workerID, action, epoch, orderKey, payload)
-	return orders.SaveWithHistory(ctx, c.kv, orderKey, ord, c.cfg.OrderHistoryKeep)
-}
-
-func (c *Controller) waitAck(ctx context.Context, workerID string, action orders.Action, epoch int64) error {
-	if c.cfg.AckPrefix == "" {
-		return nil
-	}
-	ackKey := fmt.Sprintf("%s/%s/%s", c.cfg.AckPrefix, c.cfg.ServiceName, workerID)
-	deadline := time.Now().Add(c.cfg.AckTimeout)
-	for time.Now().Before(deadline) {
-		var ack orders.Ack
-		ok, err := c.kv.GetJSON(ctx, ackKey, &ack)
-		if err == nil && ok && ack.Epoch == epoch && ack.Action == action {
-			if ack.Ok {
-				return nil
-			}
-			return fmt.Errorf("ack failed: %s", ack.Message)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(1 * time.Second):
-		}
-	}
-	log.Printf("[hmi] ack timeout worker=%s action=%s epoch=%d", workerID, action, epoch)
-	return nil
 }
 
 func (c *Controller) loadState(ctx context.Context) {

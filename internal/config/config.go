@@ -258,9 +258,10 @@ type ServicesAgentConfig struct {
 }
 
 type HmiRoleDef struct {
-	Name  string           `yaml:"name"`
-	Start ServiceStartSpec `yaml:"start"`
-	Stop  ServiceStartSpec `yaml:"stop"`
+	Name        string           `yaml:"name"`
+	Start       ServiceStartSpec `yaml:"start"`
+	Stop        ServiceStartSpec `yaml:"stop"`
+	StopTimeout time.Duration    `yaml:"stop_timeout"`
 }
 
 type HmiAssignment struct {
@@ -276,24 +277,20 @@ type HmiControllerConfig struct {
 	LockKey  string `yaml:"lock_key"`
 	StateKey string `yaml:"state_key"`
 
-	AssignmentsPrefix string        `yaml:"assignments_prefix"`
-	WorkersPrefix     string        `yaml:"workers_prefix"`
-	OrdersPrefix      string        `yaml:"orders_prefix"`
-	AckPrefix         string        `yaml:"ack_prefix"`
-	ServiceName       string        `yaml:"service_name"`
-	AckTimeout        time.Duration `yaml:"ack_timeout"`
+	AssignmentsPrefix string `yaml:"assignments_prefix"`
+	WorkersPrefix     string `yaml:"workers_prefix"`
 
 	WaitFor    []string `yaml:"wait_for"`
 	MinPassing int      `yaml:"min_passing"`
 
-	Roles              []HmiRoleDef    `yaml:"roles"`
 	DefaultAssignments []HmiAssignment `yaml:"default_assignments"`
 }
 
 type HmiAgentConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	AgentID       string `yaml:"agent_id"`
-	OrdersPrefix  string `yaml:"orders_prefix"`
-	AckPrefix     string `yaml:"ack_prefix"`
-	WorkersPrefix string `yaml:"workers_prefix"`
+	Enabled            bool          `yaml:"enabled"`
+	AgentID            string        `yaml:"agent_id"`
+	AssignmentsPrefix  string        `yaml:"assignments_prefix"`
+	WorkersPrefix      string        `yaml:"workers_prefix"`
+	Roles              []HmiRoleDef  `yaml:"roles"`
+	DefaultStopTimeout time.Duration `yaml:"default_stop_timeout"`
 }
