@@ -300,6 +300,7 @@ func (c *Controller) activeServiceInstances(ctx context.Context, svcName string)
 			})
 		}
 	}
+	// Keep placement decisions stable so the same healthy instances are preferred across reconciles.
 	sort.Slice(active, func(i, j int) bool {
 		if active[i].NodeID != active[j].NodeID {
 			return active[i].NodeID < active[j].NodeID

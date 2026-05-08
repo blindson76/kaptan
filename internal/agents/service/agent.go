@@ -286,10 +286,10 @@ func (a *Agent) stopService(name string) error {
 		return nil
 	}
 	handle.stop()
-	a.deregister(handle.serviceID)
 	if handle.cmd != nil && handle.cmd.Process != nil {
 		_ = handle.cmd.Process.Kill()
 	}
+	a.deregister(handle.serviceID)
 	return nil
 }
 
