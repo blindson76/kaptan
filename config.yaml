@@ -53,9 +53,9 @@ tasks:
     controller_id: ''
     lock_key: 'locks/kafka-controller'
     state_key: 'state/kafka-controller'
-    candidates_prefix: 'candidates/kafka'
-    health_prefix: 'health/kafka'
-    spec_key: 'spec/kafka'
+    candidates_prefix: 'candidates/kafka/controllers'
+    health_prefix: 'health/kafka/controllers'
+    spec_key: 'spec/kafka/controllers'
     election_interval: '10s'
     initial_settle_duration: '5s'   # debounce window before choosing initial 3 members
     allow_degraded_single_member: false
@@ -64,10 +64,10 @@ tasks:
     enabled: true
     agent_id: '${env.NODE_NAME}'
     worker_id: '${env.NODE_NAME}'
-    report_key: 'candidates/kafka/${env.NODE_NAME}'
-    orders_key: 'orders/kafka/${env.NODE_NAME}'
-    ack_key: 'acks/kafka/${env.NODE_NAME}'
-    health_key: 'health/kafka/${env.NODE_NAME}'
+    report_key: 'candidates/kafka/controllers/${env.NODE_NAME}'
+    orders_key: 'orders/kafka/controllers/${env.NODE_NAME}'
+    ack_key: 'acks/kafka/controllers/${env.NODE_NAME}'
+    health_key: 'health/kafka/controllers/${env.NODE_NAME}'
     kafka_bin_dir: '${env.KAFKA_TOOLS}'
     work_dir: '${env.CMS_ROOT}'
     log_dir: '${env.KAFKA_DATA_DIR}'

@@ -309,8 +309,8 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 	}
 
 	startCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-server-start.bat")
-	logPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("kafka-server-%s.log", nodeID))
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("kafka-controller-%s.log", nodeID))
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
@@ -359,16 +359,14 @@ func (a *Agent) renderProperties(bootstrap string) string {
 		bs = a.cfg.ControllerAddr
 	}
 	nodeID := a.nodeID()
-	logDir := escapeWindowsPath(a.cfg.LogDir)
 	metaLogDir := escapeWindowsPath(a.cfg.MetaLogDir)
+	logDir := escapeWindowsPath(a.cfg.LogDir)
 	return fmt.Sprintf(`node.id=%s
-process.roles=broker,controller
+process.roles=controller
 
-listeners=PLAINTEXT://%s,CONTROLLER://%s
-advertised.listeners=PLAINTEXT://%s
-inter.broker.listener.name=PLAINTEXT
+listeners=CONTROLLER://%s
 controller.listener.names=CONTROLLER
-listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
 
 controller.quorum.bootstrap.servers=%s
 # Replication defaults
@@ -381,7 +379,7 @@ num.partitions=3
 unclean.leader.election.enable=false
 log.dirs=%s
 metadata.log.dir=%s
-`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, logDir, metaLogDir)
+`, nodeID, a.cfg.ControllerAddr, bs, logDir, metaLogDir)
 }
 
 func (a *Agent) nodeID() string {
@@ -504,6 +502,19 @@ func ensureStorageSuffix(endpoint, storageID string) string {
 		return fmt.Sprintf("%s:%s", endpoint, storageID)
 	}
 	return endpoint
+}
+
+func (a *Agent) controllerPortOK() bool {
+	addr := strings.TrimSpace(a.cfg.ControllerAddr)
+	if addr == "" {
+		return false
+	}
+	c, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }
 
 func waitTCP(addr string, timeout time.Duration) error {
@@ -856,12 +867,12 @@ func (a *Agent) kafkaHeartbeat(ctx context.Context) {
 			svc := a.getActiveService()
 			if a.reg != nil && svc.CheckID != "" {
 				status := servicereg.StatusWarning
-				if role != "" {
+				if role != "" && portOK {
 					status = servicereg.StatusPassing
 				}
 				_ = a.reg.SetTTL(ctx, svc.CheckID, status, note)
 			}
-			healthy := role != ""
+			healthy := role != "" && portOK
 			a.publishHealth(ctx, healthy, note, note)
 		}
 	}
