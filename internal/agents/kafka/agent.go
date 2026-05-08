@@ -308,7 +308,10 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
 		return err
 	}
-	props := a.renderProperties(bootstrap)
+	props, err := a.renderProperties(bootstrap)
+	if err != nil {
+		return err
+	}
 	if err := os.WriteFile(propsPath, []byte(props), 0o644); err != nil {
 		return err
 	}
@@ -376,7 +379,7 @@ func (a *Agent) stopKafka() error {
 	return nil
 }
 
-func (a *Agent) renderProperties(bootstrap string) string {
+func (a *Agent) renderProperties(bootstrap string) (string, error) {
 	bs := bootstrap
 	if bs == "" && a.cfg.ControllerAddr != "" {
 		bs = a.cfg.ControllerAddr
@@ -394,17 +397,22 @@ func (a *Agent) renderProperties(bootstrap string) string {
 	if p := strings.TrimSpace(a.cfg.ServerPropertiesTemplate); p != "" {
 		b, err := os.ReadFile(p)
 		if err != nil {
-			log.Printf("[kafka-agent] cannot read server.properties template %q: %v (using default template)", p, err)
-		} else {
-			tpl = string(b)
+			return "", fmt.Errorf("read server.properties template %q: %w", p, err)
 		}
+		tpl = string(b)
 	}
-	return os.Expand(tpl, func(key string) string {
+	unknownVars := map[string]struct{}{}
+	out := os.Expand(tpl, func(key string) string {
 		if v, ok := vals[key]; ok {
 			return v
 		}
+		if _, seen := unknownVars[key]; !seen {
+			unknownVars[key] = struct{}{}
+			log.Printf("[kafka-agent] server.properties template variable %q is undefined; expanding as empty string", key)
+		}
 		return ""
 	})
+	return out, nil
 }
 
 func (a *Agent) nodeID() string {
