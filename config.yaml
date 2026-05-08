@@ -9,7 +9,7 @@ consul:
 
 tasks:
   mongo_controller:
-    enabled: false
+    enabled: true
     instance_number: 1                 # set 1 on one node, 2 on another (standby), etc.
     controller_id: ''                   # optional; if empty -> NODE_NAME + #instance_number
     lock_key: 'locks/mongo-controller'
@@ -23,7 +23,7 @@ tasks:
     allow_degraded_single_member: false
 
   mongo_agent:
-    enabled: false
+    enabled: true
     agent_id: '${env.NODE_NAME}'
     worker_id: '${env.NODE_NAME}'
     member_id: ${env.CONSOLE_ID}    # replica set member _id (unique per node)
@@ -35,7 +35,7 @@ tasks:
     dbpath: '${env.MONGO_DB_PATH}'
     bind_ip: '${env.CSB_IP}'
     bind_addr: '${env.MONGO_ADDR}'
-    temp_port: 27028                # local temporary port for offline probe
+    temp_port: 27017                # local temporary port for offline probe
     admin_user: 'admin'
     admin_pass: '123'
     port: 27017
@@ -86,7 +86,7 @@ tasks:
 
 
   services_controller:
-    enabled: false
+    enabled: true
     instance_number: 1
     controller_id: ''
     lock_key: 'locks/services-controller'
@@ -97,27 +97,485 @@ tasks:
     min_passing: 3
     reconcile_interval: '10s'
     services:
-      - name: 'my-service-a'
+      - name: 'SUP-RM-SERVER'
         instances: 2
-        tags: ['app','service-a']
+        tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
-          cmd: 'C:/apps/service-a/service-a.exe'
-          args: ['--mode','${ROLE}','--mongo','${MONGO_URI}','--kafka','${KAFKA_BOOTSTRAP}']
-          work_dir: 'C:/apps/service-a'
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=SUP-RM-SERVER',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.sup.rm.agent.agent.RMDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
 
-      - name: 'my-service-b'
+      - name: 'BITE'
         instances: 2
-        tags: ['app','service-b']
+        tags: ['dpagent','exgw']
         ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
         start:
-          cmd: 'C:/apps/service-b/service-b.exe'
-          args: ['--role','${ROLE}']
-          work_dir: 'C:/apps/service-b'
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=BITE',
+            '-DAGENT_CLASS=tr.com.havelsan.cmscore.mw.bite.agent.BITEDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      # - name: 'SUP'
+      #   instances: 2
+      #   tags: ['dpagent','exgw']
+      #   ttl: '15s'
+      #   start:
+      #     cmd: 'java.exe'
+      #     args: [
+      #       '-DAGENT_ID=SUP',
+      #       '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.sup.dp.agent.smgdpagent.AgentCommanderDPAgent',
+      #       '-DCLUSTER_ID=${env.CONSOLE_ID}',
+      #       '-DDEFAULT_SIM_MODE=OFF',
+      #       'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+      #     ]
+      #     work_dir: '${env.CMS_ROOT}'
+
+      - name: 'AWIE'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=AWIE',
+            '-DAGENT_CLASS=tr.com.havelsan.cmscore.mw.awie.agent.AWIEDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'NewAWIE'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=NewAWIE',
+            '-DAGENT_CLASS=tr.com.havelsan.cmscore.mw.awie.newagent.NewAwieDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'DRS'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=DRS',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.drs.agent.DrsDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'NAV'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=NAV',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.nav.dp.agent.NavDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-SDDS-NAV'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-SDDS-NAV',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.nav.agent.ExgwNavDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-SDDS-BITE'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-SDDS-BITE',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.sdds.bite.agent.ExgwSddsBiteDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'TM'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=TM',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.tacsit.tm.agent.TacsitTmDpAgent1',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      # - name: 'SONARTM'
+      #   instances: 3
+      #   tags: ['dpagent','exgw']
+      #   ttl: '15s'
+      #   start:
+      #     cmd: 'java.exe'
+      #     args: [
+      #       '-DAGENT_ID=SONARTM',
+      #       '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.sonar.tm.agent.SonarTmDpAgent',
+      #       '-DCLUSTER_ID=${env.CONSOLE_ID}',
+      #       '-DDEFAULT_SIM_MODE=OFF',
+      #       'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+      #     ]
+      #     work_dir: '${env.CMS_ROOT}'
+
+      - name: 'TACSIT'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=TACSIT',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.tacsit.agent.TACSITDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'TGD'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=TGD',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.tgd.agent.TgdDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'TMA'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=TMA',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.tma.agent.TmaDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      # - name: 'ISUS'
+      #   instances: 2
+      #   tags: ['dpagent','exgw']
+      #   ttl: '15s'
+      #   start:
+      #     cmd: 'java.exe'
+      #     args: [
+      #       '-DAGENT_ID=ISUS',
+      #       '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.tma.agent.IsusIntegrationDpAgent',
+      #       '-DCLUSTER_ID=${env.CONSOLE_ID}',
+      #       '-DDEFAULT_SIM_MODE=OFF',
+      #       'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+      #     ]
+      #     work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-SONAR-TRACK'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-SONAR-TRACK',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.sonar.agent.ExgwSonarDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-SONAR-BITE'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-SONAR-BITE',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.bite.agent.ExgwBiteDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-RADAR'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-RADAR',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.radar.aselsan.agent.ExgwRadarAselsanDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-ESM'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-ESM',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.esm.agent.ExgwESMDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-VRU'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-VRU',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.vruinternal.agent.ExgwVRUInternalDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-VDU'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-VDU',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.vdu.agent.ExgwVduDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-SEP'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-SEP',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.sep.agent.ExgwSepDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-AOM'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-AOM',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.aom.agent.ExgwAomDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      - name: 'EXGW-WEA'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=EXGW-WEA',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.wea.agent.ExgwWeaDPAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+      # - name: 'EXGW-TCM'
+      #   instances: 2
+      #   tags: ['dpagent','exgw']
+      #   ttl: '15s'
+      #   start:
+      #     cmd: 'java.exe'
+      #     args: [
+      #       '-DAGENT_ID=EXGW-TCM',
+      #       '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.exgw.tcm.agent.ExgwTcmDPAgent',
+      #       '-DCLUSTER_ID=${env.CONSOLE_ID}',
+      #       '-DDEFAULT_SIM_MODE=OFF',
+      #       'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+      #     ]
+      #     work_dir: '${env.CMS_ROOT}'
+
+      - name: 'TMA-DP'
+        instances: 2
+        tags: ['dpagent','exgw']
+        ttl: '15s'
+        depends_on: []
+        depends_min_passing: 0
+        start:
+          cmd: 'java.exe'
+          args: [
+            '-DAGENT_ID=TMA-DP',
+            '-DAGENT_CLASS=tr.com.havelsan.agosta.c2is.tma.agent.TmaDpAgent',
+            '-DCLUSTER_ID=${env.CONSOLE_ID}',
+            '-DDEFAULT_SIM_MODE=OFF',
+            'tr.com.havelsan.cmscore.mw.dpagent.DPAgent'
+          ]
+          work_dir: '${env.CMS_ROOT}'
+
+  hmi_controller:
+    enabled: false
+    instance_number: 1
+    controller_id: ''
+    lock_key: 'locks/hmi-controller'
+    state_key: 'state/hmi-controller'
+    assignments_prefix: 'hmi/assignments'
+    workers_prefix: 'hmi/workers'
+    wait_for: ['mongo','kafka']
+    min_passing: 3
+    default_assignments:
+      - worker_id: 'Client-1'
+        role: 'c2is'
+      - worker_id: 'Client-2'
+        role: 'c2is'
+      - worker_id: 'Client-3'
+        role: 'c2is'
+      - worker_id: 'Client-4'
+        role: 'c2is'
+      - worker_id: 'Client-5'
+        role: 'c2is'
+      - worker_id: 'Client-6'
+        role: 'c2is'
+
+  hmi_agent:
+    enabled: false
+    agent_id: '${env.NODE_NAME}'
+    assignments_prefix: 'hmi/assignments'
+    workers_prefix: 'hmi/workers'
+    default_stop_timeout: '30s'
+    roles:
+      - name: 'c2is'
+        start:
+          cmd: 'start-c2is.bat'
+          args: []
+          work_dir: '${env.CMS_ROOT}'
+        stop:
+          cmd: 'stop-c2is.bat'
+          args: []
+          work_dir: '${env.CMS_ROOT}'
+        stop_timeout: '30s'
 
   services_agent:
-    enabled: false
+    enabled: true
     agent_id: '${env.NODE_NAME}'
     orders_prefix: 'orders/services'
     ack_prefix: 'acks/services'
-    service_address: '${env.SVC_ADDR}'
+    service_address: '${env.CSB_IP}'

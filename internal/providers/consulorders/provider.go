@@ -91,21 +91,33 @@ func (p Provider) PublishMongoSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	_, removed, _ := diffMembers(prev.Members, spec.Members)
 
+	wipeTasks := make([]orderTask, 0)
+	for id, v := range spec.MongoWipeMembers {
+		if v {
+			wipeTasks = append(wipeTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
+			})
+		}
+	}
+
+	if err := runParallel(ctx, wipeTasks); err != nil {
+		log.Printf("[orders] mongo wipe error:%v", err)
+		return err
+	}
 	startTasks := make([]orderTask, 0, len(spec.Members))
 	for _, id := range spec.Members {
 		id := id
 		startTasks = append(startTasks, func(ctx context.Context) error {
-			if spec.MongoWipeMembers != nil && spec.MongoWipeMembers[id] {
-				_ = p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionWipe, epoch, nil)
-			}
 			return p.issueAndWait(ctx, orders.KindMongo, id, orders.ActionStart, epoch, map[string]any{
 				"replSetName": spec.MongoReplicaSetID,
+				"wait":        true,
 			})
 		})
 	}
 	if err := runParallel(ctx, startTasks); err != nil {
 		return err
 	}
+	log.Printf("[orders] mongo start done")
 
 	if p.MongoHealthPrefix != "" {
 		healthByID = loadHealthByID(ctx, p.KV, p.MongoHealthPrefix)
@@ -260,8 +272,18 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 			dirIDFromSpec[k] = v
 		}
 	}
+	for k, v := range spec.KafkaControllerDirectoryIDs {
+		if k != "" && v != "" {
+			dirIDFromSpec[k] = v
+		}
+	}
 	memberIDFromSpec := map[string]string{}
 	for k, v := range old.KafkaMemberIDs {
+		if k != "" && v != "" {
+			memberIDFromSpec[k] = v
+		}
+	}
+	for k, v := range spec.KafkaMemberIDs {
 		if k != "" && v != "" {
 			memberIDFromSpec[k] = v
 		}
@@ -269,12 +291,8 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	added, removed, surrendered := diffMembers(old.Members, spec.Members)
 	log.Printf("Diff: added:%v removed:%v surrendered:%v", added, removed, surrendered)
-	addedSet := map[string]bool{}
-	for _, id := range added {
-		if id != "" {
-			addedSet[id] = true
-		}
-	}
+	log.Printf("spec: %v, oldspec: %v", spec, old)
+	log.Printf("memberIDFromSpec: %v, dirIDFromSpec: %v, spec.Members: %v", memberIDFromSpec, dirIDFromSpec, spec.Members)
 
 	coordinatorID := ""
 	bootstrap := ""
@@ -282,42 +300,18 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 		coordinatorID = spec.Members[0]
 		bootstrap = ctrlAddrByID[coordinatorID]
 	}
-	if bootstrap == "" && len(spec.KafkaBootstrapServers) > 0 {
-		bootstrap = spec.KafkaBootstrapServers[0]
+	if bootstrap == "" && len(spec.KafkaBootstrapControllers) > 0 {
+		bootstrap = spec.KafkaBootstrapControllers[0]
 	}
-
-	// Build initial controllers from the desired members (not just the new ones) so replacements join the existing quorum.
-	buildInitialControllers := func(ids []string) []string {
-		out := make([]string, 0, len(ids))
-		for _, id := range ids {
-			if id == "" {
-				continue
-			}
-			node := nodeIDByID[id]
-			addr := ctrlAddrByID[id]
-			st := storageIDByID[id]
-			if st == "" {
-				st = dirIDFromSpec[id]
-			}
-			if node == "" || addr == "" || st == "" {
-				continue
-			}
-			out = append(out, fmt.Sprintf("%s@%s:%s", node, addr, st))
-		}
-		return out
-	}
-	initialControllers := buildInitialControllers(spec.Members)
-	log.Printf("[kafka-orders] initial controllers (all members): %v", initialControllers)
 
 	// remove voters first
 	stopTasks := make([]orderTask, 0, len(removed))
 	for _, id := range removed {
 		log.Printf("[kafka-orders] removing member %s, members:%v dirs:%v", id, memberIDFromSpec, dirIDFromSpec)
 		for _, sId := range surrendered {
-			if err := p.issueAndWait(ctx, orders.KindKafka, sId, orders.ActionRemoveVoter, epoch, map[string]any{
-				"bootstrapServer":         ctrlAddrByID[sId],
-				"controller-id":           memberIDFromSpec[id],
-				"controller-directory-id": dirIDFromSpec[id],
+			if err := p.issueAndWait(ctx, orders.KindKafka, sId, orders.ActionRemoveController, epoch, map[string]any{
+				"bootstrap-controller": ctrlAddrByID[sId],
+				"controller-id":        memberIDFromSpec[id],
 			}); err == nil {
 				log.Printf("[kafka-orders] surrendered member %s removed as voter from %s", id, sId)
 				break
@@ -329,65 +323,54 @@ func (p Provider) PublishKafkaSpec(ctx context.Context, spec types.ReplicaSpec) 
 
 	// start added members
 	startTasks := make([]orderTask, 0, len(added))
-	for _, id := range added {
-		id := id
-		startTasks = append(startTasks, func(ctx context.Context) error {
-			standalone := existingCluster
-			inits := initialControllers
-			if standalone {
-				inits = nil
-			}
-			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-				"bootstrapServers":   spec.KafkaBootstrapServers,
-				"initialControllers": inits,
-				"standalone":         standalone,
+	for i, id := range added {
+		if i == 0 && !existingCluster {
+			startTasks = append(startTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+					"bootstrap-controllers": spec.KafkaBootstrapControllers,
+					"mode":                  "standalone",
+				})
 			})
-		})
+
+		} else {
+			startTasks = append(startTasks, func(ctx context.Context) error {
+				return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
+					"bootstrap-controllers": spec.KafkaBootstrapControllers,
+					"mode":                  "no-initial-controllers",
+				})
+			})
+
+		}
 	}
 	runParallelBestEffort(ctx, startTasks)
 
-	// add voters
-	if old.Members != nil {
-		for _, id := range added {
-			voterID := nodeIDByID[id]
-			endpoint := ctrlAddrByID[id]
-			if voterID == "" || endpoint == "" || coordinatorID == "" || bootstrap == "" {
-				continue
-			}
-			_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionAddVoter, epoch, map[string]any{
-				"bootstrapServer": bootstrap,
-				"voterId":         voterID,
-				"voterEndpoint":   endpoint,
+	startAddCtrlTasks := make([]orderTask, 0, len(added))
+	for i, id := range added {
+		if i == 0 && !existingCluster {
+			continue
+		}
+		startAddCtrlTasks = append(startAddCtrlTasks, func(ctx context.Context) error {
+			return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionAddController, epoch, map[string]any{
+				"bootstrap-controllers": spec.KafkaBootstrapControllers,
 			})
-		}
-		// rebalance partitions
-		// if (len(added) > 0 || len(removed) > 0) && coordinatorID != "" && bootstrap != "" {
-		// 	_ = p.issueAndWait(ctx, orders.KindKafka, coordinatorID, orders.ActionReassignPartitions, epoch, map[string]any{
-		// 		"bootstrapServer": bootstrap,
-		// 	})
-		// }
+		})
+	}
+	runParallelBestEffort(ctx, startAddCtrlTasks)
 
-		ensureTasks := make([]orderTask, 0, len(spec.Members))
-		// ensure started
-		if !existingCluster {
-			for _, id := range spec.Members {
-				id := id
-				ensureTasks = append(ensureTasks, func(ctx context.Context) error {
-					standalone := existingCluster && addedSet[id]
-					inits := initialControllers
-					if standalone {
-						inits = nil
-					}
-					return p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionStart, epoch, map[string]any{
-						"bootstrapServers":   spec.KafkaBootstrapServers,
-						"initialControllers": inits,
-						"standalone":         standalone,
-					})
-				})
-			}
+	if len(added) > 0 && existingCluster {
+		id := added[0]
+		var brokerList []string
+		for _, v := range spec.KafkaMemberIDs {
+			brokerList = append(brokerList, v)
 		}
-		runParallelBestEffort(ctx, ensureTasks)
-
+		if err := p.issueAndWait(ctx, orders.KindKafka, id, orders.ActionReassignPartitions, epoch, map[string]any{
+			"bootstrap-servers":     spec.KafkaBootstrapServers,
+			"bootstrap-controllers": spec.KafkaBootstrapControllers,
+			"broker-list":           strings.Join(brokerList, ","),
+		}); err != nil {
+			log.Printf("[kafka-orders] failed to start reassignpartitions %s: %v", id, err)
+			return err
+		}
 	}
 
 	_ = p.KV.PutJSON(ctx, p.KafkaLastAppliedKey, &spec)
@@ -516,7 +499,16 @@ func (p Provider) issueReconfigTargets(ctx context.Context, targets []string, ep
 		}
 		if isNotWritablePrimary(err) {
 			lastErr = err
-			log.Printf("[orders] reconfigure target=%s not writable primary; trying next", target)
+			log.Printf("[orders] reconfigure target=%s not writable primary; trying forced", target)
+			forcedPayload := make(map[string]any)
+			for k, v := range payload {
+				forcedPayload[k] = v
+			}
+			forcedPayload["force"] = true
+			err := p.issueAndWait(ctx, orders.KindMongo, target, orders.ActionReconfigure, epoch, forcedPayload)
+			if err == nil {
+				return nil
+			}
 			continue
 		}
 		return err

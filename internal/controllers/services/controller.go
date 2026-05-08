@@ -33,13 +33,15 @@ type Config struct {
 }
 
 type ServiceDef struct {
-	Name      string
-	Instances int
-	Tags      []string
-	TTL       string
-	StartCmd  string
-	StartArgs []string
-	WorkDir   string
+	Name               string
+	Instances          int
+	Tags               []string
+	TTL                string
+	DependsOn          []string
+	DependsMinPassing  int
+	StartCmd           string
+	StartArgs          []string
+	WorkDir            string
 }
 
 type Controller struct {
@@ -52,6 +54,11 @@ type Controller struct {
 
 	candidates []string // node ids
 	sm         *stateless.StateMachine
+}
+
+type serviceCounter struct {
+	Count     int64     `json:"count"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 func New(cfg Config, kv store.KV, locker interface {
@@ -88,6 +95,7 @@ const (
 )
 
 func (c *Controller) runActive(ctx context.Context) error {
+	log.Printf("[services] runActive")
 	ps := fsm.NewPersistedState(c.kv, c.cfg.StateKey, string(StBoot))
 	c.sm = common.NewMachine(ctx, ps)
 	c.configure(c.sm)
@@ -116,8 +124,12 @@ func (c *Controller) configure(sm *stateless.StateMachine) {
 			log.Printf("[services] waiting dependencies: %v", c.cfg.WaitFor)
 			return nil
 		}).
-		PermitReentry(TrTimer).
-		Permit(TrTimer, StPlace, func(context.Context, ...any) bool { return c.depsReady() })
+		PermitDynamic(TrTimer, func(ctx context.Context, args ...any) (any, error) {
+			if c.depsReady() {
+				return StPlace, nil
+			}
+			return StWaitDeps, nil
+		})
 
 	sm.Configure(StPlace).
 		OnEntry(func(ctx context.Context, _ ...any) error {
@@ -182,8 +194,13 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 		log.Printf("[services] no candidates")
 		return
 	}
-	used := map[string]bool{}
-	for _, svc := range c.cfg.Services {
+	n := len(c.candidates)
+	firstNext := 0
+	for si, svc := range c.cfg.Services {
+		if !c.depsReadyForService(svc) {
+			log.Printf("[services] waiting service dependencies service=%s deps=%v", svc.Name, svc.DependsOn)
+			continue
+		}
 		inst := svc.Instances
 		if inst <= 0 {
 			inst = 2
@@ -191,63 +208,161 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 		if inst > 2 {
 			inst = 2
 		}
-		// choose 2 distinct nodes
-		chosen := []string{}
-		for _, id := range c.candidates {
-			if used[id] {
+		if inst > n {
+			inst = n
+		}
+		activeNodes, activeCount, ok := c.activeServiceNodes(ctx, svc.Name)
+		if !ok {
+			continue
+		}
+		if activeCount >= inst {
+			continue
+		}
+		need := inst - activeCount
+		used := map[string]bool{}
+		isReplacement := activeCount > 0
+
+		if activeCount == 0 && need > 0 {
+			if id, ok := pickCandidate(c.candidates, activeNodes, used, firstNext); ok {
+				firstNext++
+				if firstNext >= n {
+					firstNext = 0
+				}
+				c.issueOrder(ctx, svc, id, "master")
+				if isReplacement {
+					c.incrementReplacementCount(ctx, svc.Name)
+				}
+				used[id] = true
+				need--
+			}
+		}
+
+		start := si % n
+		for i := 0; need > 0 && i < n; i++ {
+			id := c.candidates[(start+i)%n]
+			if activeNodes[id] || used[id] {
 				continue
 			}
-			chosen = append(chosen, id)
+			c.issueOrder(ctx, svc, id, "slave")
+			if isReplacement {
+				c.incrementReplacementCount(ctx, svc.Name)
+			}
 			used[id] = true
-			if len(chosen) == inst {
-				break
-			}
+			need--
 		}
-		if len(chosen) < inst {
-			// allow reuse if not enough
-			for _, id := range c.candidates {
-				if contains(chosen, id) {
-					continue
-				}
-				chosen = append(chosen, id)
-				if len(chosen) == inst {
-					break
-				}
-			}
-		}
-		roles := []string{"master", "slave"}
-		for i, id := range chosen {
-			role := roles[min(i, len(roles)-1)]
-			ord := orders.Order{
-				Kind:     orders.KindService,
-				TargetID: id,
-				Action:   orders.ActionStart,
-				Epoch:    time.Now().Unix(),
-				IssuedAt: time.Now(),
-				Payload: map[string]any{
-					"service": svc.Name,
-					"role":    role,
-					"cmd":     svc.StartCmd,
-					"args":    svc.StartArgs,
-					"workDir": svc.WorkDir,
-					"tags":    svc.Tags,
-					"ttl":     svc.TTL,
-				},
-			}
-			orderKey := "orders/services/" + svc.Name + "/" + id
-			_ = orders.SaveWithHistory(ctx, c.kv, orderKey, ord, c.cfg.OrderHistoryKeep)
+		if need > 0 {
+			log.Printf("[services] not enough candidates to place service=%s need=%d active=%d total=%d", svc.Name, need, activeCount, n)
 		}
 	}
 }
 
-func contains(a []string, s string) bool {
-	for _, x := range a {
-		if x == s {
-			return true
+func (c *Controller) depsReadyForService(svc ServiceDef) bool {
+	if len(svc.DependsOn) == 0 || c.consul == nil {
+		return true
+	}
+	minPassing := svc.DependsMinPassing
+	if minPassing <= 0 {
+		minPassing = 1
+	}
+	for _, dep := range svc.DependsOn {
+		if dep == "" {
+			continue
+		}
+		ents, _, err := c.consul.Health().Service(dep, "", true, nil)
+		if err != nil {
+			log.Printf("[services] dependency health error service=%s dep=%s err=%v", svc.Name, dep, err)
+			return false
+		}
+		if len(ents) < minPassing {
+			return false
 		}
 	}
-	return false
+	return true
 }
+
+func (c *Controller) activeServiceNodes(ctx context.Context, svcName string) (map[string]bool, int, bool) {
+	active := map[string]bool{}
+	if c.consul == nil {
+		return active, 0, true
+	}
+	ents, _, err := c.consul.Health().Service(svcName, "", true, nil)
+	if err != nil {
+		log.Printf("[services] health check error service=%s: %v", svcName, err)
+		return nil, 0, false
+	}
+	for _, ent := range ents {
+		if ent == nil || ent.Node == nil {
+			continue
+		}
+		if ent.Node.Node != "" {
+			active[ent.Node.Node] = true
+		}
+	}
+	return active, len(ents), true
+}
+
+func pickCandidate(candidates []string, active map[string]bool, used map[string]bool, start int) (string, bool) {
+	n := len(candidates)
+	if n == 0 {
+		return "", false
+	}
+	for i := 0; i < n; i++ {
+		id := candidates[(start+i)%n]
+		if active[id] || used[id] {
+			continue
+		}
+		return id, true
+	}
+	return "", false
+}
+
+func (c *Controller) issueOrder(ctx context.Context, svc ServiceDef, id string, role string) {
+	ord := orders.Order{
+		Kind:     orders.KindService,
+		TargetID: id,
+		Action:   orders.ActionStart,
+		Epoch:    time.Now().Unix(),
+		IssuedAt: time.Now(),
+		Payload: map[string]any{
+			"service": svc.Name,
+			"role":    role,
+			"cmd":     svc.StartCmd,
+			"args":    svc.StartArgs,
+			"workDir": svc.WorkDir,
+			"tags":    svc.Tags,
+			"ttl":     svc.TTL,
+		},
+	}
+	orderKey := "orders/services/" + svc.Name + "/" + id
+	log.Printf("[services] order publish service=%s role=%s target=%s action=%s epoch=%d key=%s", svc.Name, role, id, ord.Action, ord.Epoch, orderKey)
+	_ = orders.SaveWithHistory(ctx, c.kv, orderKey, ord, c.cfg.OrderHistoryKeep)
+}
+
+func (c *Controller) incrementReplacementCount(ctx context.Context, svcName string) {
+	if svcName == "" || c.kv == nil {
+		return
+	}
+	key := "stats/services/replacements/" + svcName
+	c.incrementCounter(ctx, key)
+}
+
+func (c *Controller) incrementCounter(ctx context.Context, key string) {
+	var cstat serviceCounter
+	ok, err := c.kv.GetJSON(ctx, key, &cstat)
+	if err != nil {
+		log.Printf("[services] counter read error key=%s err=%v", key, err)
+		return
+	}
+	if !ok {
+		cstat = serviceCounter{}
+	}
+	cstat.Count++
+	cstat.UpdatedAt = time.Now()
+	if err := c.kv.PutJSON(ctx, key, &cstat); err != nil {
+		log.Printf("[services] counter write error key=%s err=%v", key, err)
+	}
+}
+
 func min(a, b int) int {
 	if a < b {
 		return a

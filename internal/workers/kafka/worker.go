@@ -3,9 +3,10 @@ package kafka
 import (
 	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,40 +40,32 @@ type Worker struct {
 func New(cfg Config, kv store.KV) *Worker { return &Worker{cfg: cfg, kv: kv} }
 
 func (w *Worker) RunOnce(ctx context.Context) error {
-	log.Printf("[kafka-worker] offline status probe starting")
-
-	w.cleanupDataDirs()
-
-	clusterID := ""
-	eligible := false
-	reason := ""
-
-	// Scan meta.properties under each meta dir. Prefer the newest one.
-	newest := time.Time{}
-	foundMeta := false
-	for _, d := range w.cfg.MetaDirs {
-		p := filepath.Join(d, "meta.properties")
-		st, err := os.Stat(p)
-		if err != nil {
-			continue
+	attempt := 0
+	for {
+		attempt++
+		err := w.runProbe(ctx)
+		if err == nil {
+			return nil
 		}
-		foundMeta = true
-		if st.ModTime().After(newest) {
-			newest = st.ModTime()
-			c, _, ok := readMetaProperties(p)
-			if ok {
-				clusterID = c
-				eligible = true
-				reason = ""
-			} else {
-				eligible = false
-				reason = "meta.properties parse failed"
-			}
+		log.Printf("[kafka-worker] offline status probe attempt=%d failed: %v", attempt, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
 		}
 	}
-	if !foundMeta {
-		eligible = true
-		reason = "meta.properties not found (uninitialized member)"
+}
+
+func (w *Worker) runProbe(ctx context.Context) error {
+	log.Printf("[kafka-worker] offline status probe starting")
+	clusterID := ""
+	eligible := true
+	reason := "meta.properties not found (uninitialized member)"
+
+	if err := w.cleanupDataDirs(); err != nil {
+		eligible = false
+		reason = fmt.Sprintf("data dir cleanup failed: %v", err)
+		log.Printf("[kafka-worker] offline status probe data dir cleanup failed: %v", err)
 	}
 
 	rep := types.CandidateReport{
@@ -137,19 +130,22 @@ func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {
 	return clusterID, nodeID, true
 }
 
-func (w *Worker) cleanupDataDirs() {
+func (w *Worker) cleanupDataDirs() error {
 	paths := []string{w.cfg.LogDir, w.cfg.MetaLogDir}
 	for _, d := range paths {
 		if d == "" {
 			continue
 		}
-		log.Printf("[kafka-worker] cleanup dir %s", d)
-		if err := os.RemoveAll(d); err != nil {
-			log.Printf("[kafka-worker] failed to remove dir %s: %v", d, err)
-			continue
+		_, err := os.ReadDir(d)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("read dir %s: %w", d, err)
 		}
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			log.Printf("[kafka-worker] failed to recreate dir %s: %v", d, err)
+		if err := os.RemoveAll(d); err != nil {
+			return fmt.Errorf("remove dir %s: %w", d, err)
 		}
 	}
+	return nil
 }

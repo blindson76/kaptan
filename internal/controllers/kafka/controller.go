@@ -327,18 +327,22 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		if eligible[i].KafkaStorageID != "" {
 			dirIDs[eligible[i].ID] = eligible[i].KafkaStorageID
 		}
-		if eligible[i].KafkaNodeID != "" {
-			memberIDs[eligible[i].ID] = eligible[i].KafkaNodeID
-		}
+	}
+	for _, cn := range c.candidates {
+		memberIDs[cn.ID] = cn.KafkaNodeID
 	}
 	c.specVersion++
-	bootstrap := make([]string, 0, len(members))
+	bootstrapControllers := make([]string, 0, len(members))
+	bootstrapServers := make([]string, 0, len(members))
 	// Build controller.quorum.bootstrap.servers from selected candidates controller addresses
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
 				if cr.KafkaControllerAddr != "" {
-					bootstrap = append(bootstrap, cr.KafkaControllerAddr)
+					bootstrapControllers = append(bootstrapControllers, cr.KafkaControllerAddr)
+				}
+				if cr.KafkaBrokerAddr != "" {
+					bootstrapServers = append(bootstrapServers, cr.KafkaBrokerAddr)
 				}
 			}
 		}
@@ -351,10 +355,12 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		Version:                     c.specVersion,
 		KafkaMode:                   "controller",
 		KafkaDynamicVoter:           true,
-		KafkaBootstrapServers:       bootstrap,
+		KafkaBootstrapControllers:   bootstrapControllers,
+		KafkaBootstrapServers:       bootstrapServers,
 		KafkaControllerDirectoryIDs: dirIDs,
 		KafkaMemberIDs:              memberIDs,
 	}
+	log.Printf("[kafka] publishing spec: %+v", spec)
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)
 	if c.provider != nil {
@@ -363,7 +369,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 }
 
 func (c *Controller) specAllHealthy() bool {
-	log.Printf("[kafka-controller] check health spec:%v, health:%v", c.spec, c.health)
+	// log.Printf("[kafka-controller] check health spec:%v, health:%v", c.spec, c.health)
 	if len(c.spec.Members) == 0 {
 		return false
 	}
@@ -486,16 +492,24 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	members[failedIdx] = replacement
 
 	c.specVersion++
-	bootstrap := make([]string, 0, len(members))
+	bootstrapControllers := make([]string, 0, len(members))
+	bootstrapServers := make([]string, 0, len(members))
+	membersId := map[string]string{}
 	// Build controller.quorum.bootstrap.servers from selected candidates controller addresses
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
 				if cr.KafkaControllerAddr != "" {
-					bootstrap = append(bootstrap, cr.KafkaControllerAddr)
+					bootstrapControllers = append(bootstrapControllers, cr.KafkaControllerAddr)
+				}
+				if cr.KafkaBrokerAddr != "" {
+					bootstrapServers = append(bootstrapServers, cr.KafkaBrokerAddr)
 				}
 			}
 		}
+	}
+	for _, id := range c.candidates {
+		membersId[id.ID] = id.KafkaNodeID
 	}
 
 	spec := types.ReplicaSpec{
@@ -505,8 +519,10 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 		Version:                     c.specVersion,
 		KafkaMode:                   "controller",
 		KafkaDynamicVoter:           true,
-		KafkaBootstrapServers:       bootstrap,
+		KafkaBootstrapControllers:   bootstrapControllers,
+		KafkaBootstrapServers:       bootstrapServers,
 		KafkaControllerDirectoryIDs: dirIDs,
+		KafkaMemberIDs:              membersId,
 	}
 	c.spec = spec
 	_ = c.kv.PutJSON(ctx, c.cfg.SpecKey, &spec)

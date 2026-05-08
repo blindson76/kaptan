@@ -14,17 +14,30 @@ type ConsulRegistry struct {
 func NewConsulRegistry(c *capi.Client) *ConsulRegistry { return &ConsulRegistry{c: c} }
 
 func (r *ConsulRegistry) Register(ctx context.Context, reg Registration) error {
-    s := &capi.AgentServiceRegistration{
-        ID:      reg.ID,
-        Name:    reg.Name,
-        Address: reg.Address,
-        Port:    reg.Port,
-        Tags:    reg.Tags,
-        Check: &capi.AgentServiceCheck{
-            TTL:     reg.TTL,
-            CheckID: reg.CheckID,
-        },
-    }
+	tags := append([]string{}, reg.Tags...)
+	if reg.ID != "" {
+		hasIDTag := false
+		for _, t := range tags {
+			if t == reg.ID {
+				hasIDTag = true
+				break
+			}
+		}
+		if !hasIDTag {
+			tags = append(tags, reg.ID)
+		}
+	}
+	s := &capi.AgentServiceRegistration{
+		ID:      reg.ID,
+		Name:    reg.Name,
+		Address: reg.Address,
+		Port:    reg.Port,
+		Tags:    tags,
+		Check: &capi.AgentServiceCheck{
+			TTL:     reg.TTL,
+			CheckID: reg.CheckID,
+		},
+	}
     return r.c.Agent().ServiceRegister(s)
 }
 

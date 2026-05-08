@@ -31,6 +31,8 @@ type ConsulConfig struct {
 type TasksConfig struct {
 	ServicesController ServicesControllerConfig `yaml:"services_controller"`
 	ServicesAgent      ServicesAgentConfig      `yaml:"services_agent"`
+	HmiController      HmiControllerConfig      `yaml:"hmi_controller"`
+	HmiAgent           HmiAgentConfig           `yaml:"hmi_agent"`
 	MongoController    MongoControllerConfig    `yaml:"mongo_controller"`
 	MongoAgent         MongoAgentConfig         `yaml:"mongo_agent"`
 	KafkaController    KafkaControllerConfig    `yaml:"kafka_controller"`
@@ -105,6 +107,11 @@ func validate(c *Config) error {
 			return errors.New("tasks.kafka_controller.instance_number must be > 0 when enabled")
 		}
 	}
+	if c.Tasks.HmiController.Enabled {
+		if c.Tasks.HmiController.InstanceNumber <= 0 {
+			return errors.New("tasks.hmi_controller.instance_number must be > 0 when enabled")
+		}
+	}
 	return nil
 }
 
@@ -175,6 +182,7 @@ type KafkaAgentConfig struct {
 	OrdersKey string `yaml:"orders_key"`
 	AckKey    string `yaml:"ack_key"`
 	HealthKey string `yaml:"health_key"`
+	SpecKey   string `yaml:"spec_key"`
 
 	WorkerID  string   `yaml:"worker_id"`
 	ReportKey string   `yaml:"report_key"`
@@ -207,10 +215,12 @@ type ServiceStartSpec struct {
 }
 
 type ServiceDef struct {
-	Name      string   `yaml:"name"`
-	Instances int      `yaml:"instances"` // should be 2
-	Tags      []string `yaml:"tags"`
-	TTL       string   `yaml:"ttl"`
+	Name              string   `yaml:"name"`
+	Instances         int      `yaml:"instances"` // should be 2
+	Tags              []string `yaml:"tags"`
+	TTL               string   `yaml:"ttl"`
+	DependsOn         []string `yaml:"depends_on"`
+	DependsMinPassing int      `yaml:"depends_min_passing"`
 
 	Start ServiceStartSpec `yaml:"start"`
 }
@@ -245,4 +255,42 @@ type ServicesAgentConfig struct {
 	AckPrefix    string `yaml:"ack_prefix"`
 
 	ServiceAddress string `yaml:"service_address"` // advertise address for service registration
+}
+
+type HmiRoleDef struct {
+	Name        string           `yaml:"name"`
+	Start       ServiceStartSpec `yaml:"start"`
+	Stop        ServiceStartSpec `yaml:"stop"`
+	StopTimeout time.Duration    `yaml:"stop_timeout"`
+}
+
+type HmiAssignment struct {
+	WorkerID string `yaml:"worker_id"`
+	Role     string `yaml:"role"`
+}
+
+type HmiControllerConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	ControllerID   string `yaml:"controller_id"`
+	InstanceNumber int    `yaml:"instance_number"`
+
+	LockKey  string `yaml:"lock_key"`
+	StateKey string `yaml:"state_key"`
+
+	AssignmentsPrefix string `yaml:"assignments_prefix"`
+	WorkersPrefix     string `yaml:"workers_prefix"`
+
+	WaitFor    []string `yaml:"wait_for"`
+	MinPassing int      `yaml:"min_passing"`
+
+	DefaultAssignments []HmiAssignment `yaml:"default_assignments"`
+}
+
+type HmiAgentConfig struct {
+	Enabled            bool          `yaml:"enabled"`
+	AgentID            string        `yaml:"agent_id"`
+	AssignmentsPrefix  string        `yaml:"assignments_prefix"`
+	WorkersPrefix      string        `yaml:"workers_prefix"`
+	Roles              []HmiRoleDef  `yaml:"roles"`
+	DefaultStopTimeout time.Duration `yaml:"default_stop_timeout"`
 }

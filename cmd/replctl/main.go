@@ -11,10 +11,12 @@ import (
 	"time"
 
 	capi "github.com/hashicorp/consul/api"
+	hmiagent "github.com/umitbozkurt/consul-replctl/internal/agents/hmi"
 	kafkaagent "github.com/umitbozkurt/consul-replctl/internal/agents/kafka"
 	mongoagent "github.com/umitbozkurt/consul-replctl/internal/agents/mongo"
 	serviceagent "github.com/umitbozkurt/consul-replctl/internal/agents/service"
 	"github.com/umitbozkurt/consul-replctl/internal/config"
+	"github.com/umitbozkurt/consul-replctl/internal/controllers/hmi"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/kafka"
 	mctl "github.com/umitbozkurt/consul-replctl/internal/controllers/mongo"
 	sctl "github.com/umitbozkurt/consul-replctl/internal/controllers/services"
@@ -66,6 +68,7 @@ func main() {
 	if err := runtime.WaitConsulReady(ctx, rawCli, 2*time.Minute); err != nil {
 		log.Fatalf("%s consul not ready: %v", logPrefix, err)
 	}
+	// time.Sleep(5 * time.Second)
 	log.Printf("%s consul is ready", logPrefix)
 	locker := st.Locker()
 
@@ -212,6 +215,12 @@ func main() {
 		if cfg.Tasks.KafkaAgent.HealthKey == "" {
 			cfg.Tasks.KafkaAgent.HealthKey = fmt.Sprintf("health/kafka/%s", cfg.Tasks.KafkaAgent.AgentID)
 		}
+		if cfg.Tasks.KafkaAgent.SpecKey == "" {
+			cfg.Tasks.KafkaAgent.SpecKey = cfg.Tasks.KafkaController.SpecKey
+		}
+		if cfg.Tasks.KafkaAgent.SpecKey == "" {
+			cfg.Tasks.KafkaAgent.SpecKey = "spec/kafka"
+		}
 		if cfg.Tasks.KafkaAgent.ReportKey != "" {
 			w := kw.New(kw.Config{
 				WorkerID:       cfg.Tasks.KafkaAgent.WorkerID,
@@ -263,6 +272,7 @@ func main() {
 			LogDir:         cfg.Tasks.KafkaAgent.LogDir,
 			MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
 			HealthKey:      cfg.Tasks.KafkaAgent.HealthKey,
+			SpecKey:        cfg.Tasks.KafkaAgent.SpecKey,
 			BrokerAddr:     cfg.Tasks.KafkaAgent.BrokerAddr,
 			ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
 			ClusterID:      cfg.Tasks.KafkaAgent.ClusterID,
@@ -318,6 +328,47 @@ func main() {
 		}()
 	}
 
+	// HMI agent: monitors this node's assigned role and runs the corresponding process.
+	if cfg.Tasks.HmiAgent.Enabled {
+		if cfg.Tasks.HmiAgent.AgentID == "" {
+			cfg.Tasks.HmiAgent.AgentID = nodeName
+		}
+		if cfg.Tasks.HmiAgent.AssignmentsPrefix == "" {
+			cfg.Tasks.HmiAgent.AssignmentsPrefix = "hmi/assignments"
+		}
+		if cfg.Tasks.HmiAgent.WorkersPrefix == "" {
+			cfg.Tasks.HmiAgent.WorkersPrefix = "hmi/workers"
+		}
+		hmiRoles := make(map[string]hmiagent.RoleDef, len(cfg.Tasks.HmiAgent.Roles))
+		for _, r := range cfg.Tasks.HmiAgent.Roles {
+			if r.Name == "" {
+				continue
+			}
+			hmiRoles[r.Name] = hmiagent.RoleDef{
+				StartCmd:     r.Start.Cmd,
+				StartArgs:    r.Start.Args,
+				StartWorkDir: r.Start.WorkDir,
+				StopCmd:      r.Stop.Cmd,
+				StopArgs:     r.Stop.Args,
+				StopWorkDir:  r.Stop.WorkDir,
+				StopTimeout:  r.StopTimeout,
+			}
+		}
+		ag := hmiagent.New(hmiagent.Config{
+			AgentID:            cfg.Tasks.HmiAgent.AgentID,
+			AssignmentsPrefix:  cfg.Tasks.HmiAgent.AssignmentsPrefix,
+			WorkersPrefix:      cfg.Tasks.HmiAgent.WorkersPrefix,
+			Roles:              hmiRoles,
+			DefaultStopTimeout: cfg.Tasks.HmiAgent.DefaultStopTimeout,
+		}, st)
+		go func() {
+			log.Printf("%s hmi_agent started", logPrefix)
+			if err := ag.Run(ctx); err != nil {
+				log.Printf("%s hmi_agent stopped: %v", logPrefix, err)
+			}
+		}()
+	}
+
 	// Services controller: spreads services across nodes and ensures 2 instances (master/slave).
 	if cfg.Tasks.ServicesController.Enabled {
 		id := cfg.Tasks.ServicesController.ControllerID
@@ -328,13 +379,15 @@ func main() {
 		svcDefs := make([]sctl.ServiceDef, 0, len(cfg.Tasks.ServicesController.Services))
 		for _, s := range cfg.Tasks.ServicesController.Services {
 			svcDefs = append(svcDefs, sctl.ServiceDef{
-				Name:      s.Name,
-				Instances: s.Instances,
-				Tags:      s.Tags,
-				TTL:       s.TTL,
-				StartCmd:  s.Start.Cmd,
-				StartArgs: s.Start.Args,
-				WorkDir:   s.Start.WorkDir,
+				Name:              s.Name,
+				Instances:         s.Instances,
+				Tags:              s.Tags,
+				TTL:               s.TTL,
+				DependsOn:         s.DependsOn,
+				DependsMinPassing: s.DependsMinPassing,
+				StartCmd:          s.Start.Cmd,
+				StartArgs:         s.Start.Args,
+				WorkDir:           s.Start.WorkDir,
 			})
 		}
 		ctl := sctl.New(sctl.Config{
@@ -353,6 +406,37 @@ func main() {
 			log.Printf("%s services_controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
 				log.Printf("%s services_controller stopped: %v", logPrefix, err)
+			}
+		}()
+	}
+
+	// HMI controller: assigns roles per worker based on KV assignments.
+	if cfg.Tasks.HmiController.Enabled {
+		id := cfg.Tasks.HmiController.ControllerID
+		if id == "" {
+			id = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.HmiController.InstanceNumber)
+		}
+		defaultAssignments := make([]hmi.Assignment, 0, len(cfg.Tasks.HmiController.DefaultAssignments))
+		for _, a := range cfg.Tasks.HmiController.DefaultAssignments {
+			defaultAssignments = append(defaultAssignments, hmi.Assignment{
+				WorkerID: a.WorkerID,
+				Role:     a.Role,
+			})
+		}
+		ctl := hmi.New(hmi.Config{
+			ControllerID:       id,
+			LockKey:            cfg.Tasks.HmiController.LockKey,
+			StateKey:           cfg.Tasks.HmiController.StateKey,
+			AssignmentsPrefix:  cfg.Tasks.HmiController.AssignmentsPrefix,
+			WorkersPrefix:      cfg.Tasks.HmiController.WorkersPrefix,
+			WaitFor:            cfg.Tasks.HmiController.WaitFor,
+			MinPassing:         cfg.Tasks.HmiController.MinPassing,
+			DefaultAssignments: defaultAssignments,
+		}, st, locker, rawCli)
+		go func() {
+			log.Printf("%s hmi_controller started", logPrefix)
+			if err := ctl.Run(ctx); err != nil {
+				log.Printf("%s hmi_controller stopped: %v", logPrefix, err)
 			}
 		}()
 	}

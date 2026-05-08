@@ -1,7 +1,6 @@
 package mongo
 
 import (
-	"bufio"
 	"context"
 	"encoding/hex"
 	"errors"
@@ -41,7 +40,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 		return "", "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
 	}
 
-	bind := cfg.Bind
+	bind := "127.0.0.1"
 	if bind == "" {
 		bind = "127.0.0.1"
 	}
@@ -59,8 +58,8 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	}
 	log.Printf("[mongo-worker] offline probe mongod command: %s %s", cfg.MongodPath, strings.Join(args, " "))
 	cmd := exec.CommandContext(ctx, cfg.MongodPath, args...)
-	stdout, _ := cmd.StdoutPipe()
-	stderr, _ := cmd.StderrPipe()
+	// stdout, _ := cmd.StdoutPipe()
+	// stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
 		return "", "", 0, time.Time{}, err
@@ -68,17 +67,8 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		scan := func(r *bufio.Scanner) {
-			for r.Scan() {
-				// keep logs light
-			}
-		}
-		if stdout != nil {
-			scan(bufio.NewScanner(stdout))
-		}
-		if stderr != nil {
-			scan(bufio.NewScanner(stderr))
-		}
+		err := cmd.Wait()
+		log.Printf("[mongo-worker] mongo probe exit:%v", err)
 	}()
 
 	// connect
@@ -91,10 +81,11 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	defer func() { _ = cli.Disconnect(context.Background()) }()
 
 	// wait ping
-	pingCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	pingCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	for {
 		if err := cli.Database("admin").RunCommand(pingCtx, bson.D{{Key: "ping", Value: 1}}).Err(); err == nil {
+			log.Printf("[mongo-worker] PING OK:)")
 			break
 		}
 		if pingCtx.Err() != nil {
@@ -143,7 +134,14 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	// remove replset config document (best-effort) to allow standalone start later
 	//_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
 
+	stopCtx, _ := context.WithTimeout(ctx, time.Second*5)
+	err = cli.Database("admin").RunCommand(stopCtx, bson.D{{Key: "shutdown", Value: 1}}).Err()
+	log.Printf("[mongo-worker] shutdown command:%v", err)
+
+	time.Sleep(3 * time.Second)
 	_ = stopProcess(cmd, done)
+
+	log.Printf("[mongo-worker] offline probe result: replSetID: %v replSetUUID: %v term:%v lastOpLog:%v", replSetID, replSetUUID, term, lastOplog)
 	return replSetID, replSetUUID, term, lastOplog, nil
 }
 
@@ -155,9 +153,11 @@ func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) 
 	}).Decode(&res)
 	// If already exists, do nothing.
 	if users, ok := res["users"].(bson.A); ok && len(users) > 0 {
+		log.Printf("[mongo-worker] user alreday exits")
 		return
 	}
 	// create user
+	log.Printf("[mongo-worker] createing user user:%v pass:%v", user, pass)
 	err := cli.Database("admin").RunCommand(ctx, bson.D{
 		{Key: "createUser", Value: user},
 		{Key: "pwd", Value: pass},
@@ -239,18 +239,24 @@ func waitPortFree(bind string, port int) error {
 }
 
 func stopProcess(cmd *exec.Cmd, done <-chan struct{}) error {
+
+	log.Printf("[mongo-worker] Stopping mongo probe instance")
 	// try graceful
 	_ = cmd.Process.Signal(os.Interrupt)
 	select {
 	case <-done:
+		log.Printf("[mongo-worker] stopProcess recv done")
 		return nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 	}
+	log.Printf("[mongo-worker] stopProcess int timeout. Now kill")
 	_ = cmd.Process.Kill()
 	select {
 	case <-done:
+		log.Printf("[mongo-worker] stopProcess recv done2")
 		return nil
-	case <-time.After(2 * time.Second):
+	case <-time.After(4 * time.Second):
+		log.Printf("[mongo-worker] stopProcess kill timeout")
 		return errors.New("mongod probe process did not exit")
 	}
 }

@@ -115,6 +115,7 @@ echo Starting Consul...
 start "consul-%CONSOLE_ID%" /min cmd /c consul agent -server -ui -config-file %BASE%consul.hcl -data-dir %CONSUL_DATA_DIR% -node %NODE_NAME% -client %CSB_IP% -bind %CSB_IP% -bootstrap-expect 3 -retry-join 10.10.51.1 -retry-join 10.10.52.1 -retry-join 10.10.53.1 -retry-join 10.10.54.1 -retry-join 10.10.55.1 -retry-join 10.10.56.1
 
 start "Node-Worker-%CONSOLE_ID%" /min cmd /k go run -C .. .\cmd\replctl
+start "Node-%CONSOLE_ID%"  /min  cmd /k
 goto end
 echo Waiting Consul to be ready at %CONSUL_HTTP_ADDR% ...
 node "%BASE%wait_nomad.js" "%CONSUL_HTTP_ADDR%"
