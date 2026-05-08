@@ -189,7 +189,11 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 		_ = logFile.Close()
 		return err
 	}
-	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, cmd.Process.Pid)
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, pid)
 	checkID := fmt.Sprintf("check:%s", serviceID)
 	handle := &procHandle{
 		cmd:       cmd,
@@ -201,7 +205,7 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	a.mu.Lock()
 	a.procs[name] = handle
 	a.mu.Unlock()
-	log.Printf("[service-agent] started service=%s role=%s pid=%d log=%s", name, role, cmd.Process.Pid, logPath)
+	log.Printf("[service-agent] started service=%s role=%s pid=%d log=%s", name, role, pid, logPath)
 
 	// Register service with TTL note that includes role + pid
 	if a.reg != nil {
@@ -247,7 +251,7 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 			CheckID: checkID,
 			TTL:     ttl,
 		})
-		note := map[string]any{"service": map[string]any{"name": name, "role": role, "pid": cmd.Process.Pid}}
+		note := map[string]any{"service": map[string]any{"name": name, "role": role, "pid": pid}}
 		b, _ := json.Marshal(note)
 		_ = a.reg.SetTTL(ctx, checkID, servicereg.StatusPassing, string(b))
 		// Heartbeat loop
