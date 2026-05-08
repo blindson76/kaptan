@@ -30,8 +30,8 @@ func (k *testKV) PutJSONEphemeral(_ context.Context, _ string, _ string, v any) 
 }
 
 func (k *testKV) GetJSON(context.Context, string, any) (bool, error) { return false, nil }
-func (k *testKV) Delete(context.Context, string) error                { return nil }
-func (k *testKV) ListJSON(context.Context, string, any) error         { return nil }
+func (k *testKV) Delete(context.Context, string) error               { return nil }
+func (k *testKV) ListJSON(context.Context, string, any) error        { return nil }
 func (k *testKV) WatchPrefixJSON(context.Context, string, func() any) <-chan any {
 	return nil
 }
@@ -96,10 +96,10 @@ func TestRunProbeMarksNodeIDMismatchIneligible(t *testing.T) {
 
 	kv := &testKV{}
 	w := New(Config{
-		WorkerID: "node-2",
-		ReportKey:"candidates/kafka/node-2",
-		NodeID:   "2",
-		MetaDirs: []string{metaDir},
+		WorkerID:  "node-2",
+		ReportKey: "candidates/kafka/node-2",
+		NodeID:    "2",
+		MetaDirs:  []string{metaDir},
 	}, kv)
 
 	if err := w.runProbe(context.Background()); err != nil {
@@ -112,4 +112,3 @@ func TestRunProbeMarksNodeIDMismatchIneligible(t *testing.T) {
 		t.Fatalf("expected mismatch reason, got %q", kv.report.Reason)
 	}
 }
-

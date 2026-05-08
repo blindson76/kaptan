@@ -63,12 +63,12 @@ func (w *Worker) runProbe(ctx context.Context) error {
 	reportNodeID := w.cfg.NodeID
 	eligible := true
 	reason := "meta.properties not found (uninitialized member)"
-	clusterID, diskNodeID, foundMeta, err := w.readLocalMetaProperties()
+	clusterID, diskNodeID, found, err := w.readLocalMetaProperties()
 	if err != nil {
 		eligible = false
 		reason = fmt.Sprintf("meta.properties probe failed: %v", err)
 		log.Printf("[kafka-worker] offline status probe failed: %v", err)
-	} else if foundMeta {
+	} else if found {
 		reason = ""
 		if reportNodeID == "" {
 			reportNodeID = diskNodeID
@@ -163,15 +163,15 @@ func (w *Worker) readLocalMetaProperties() (clusterID, nodeID string, found bool
 func (w *Worker) metaPropertiesPaths() []string {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, len(w.cfg.MetaDirs)+2)
-	paths := make([]string, 0, len(w.cfg.MetaDirs)+2)
-	paths = append(paths, w.cfg.MetaDirs...)
-	paths = append(paths, w.cfg.MetaLogDir, w.cfg.LogDir)
-	for _, p := range paths {
+	inputPaths := make([]string, 0, len(w.cfg.MetaDirs)+2)
+	inputPaths = append(inputPaths, w.cfg.MetaDirs...)
+	inputPaths = append(inputPaths, w.cfg.MetaLogDir, w.cfg.LogDir)
+	for _, p := range inputPaths {
 		p = strings.TrimSpace(p)
 		if p == "" {
 			continue
 		}
-		if !strings.EqualFold(filepath.Base(p), "meta.properties") {
+		if filepath.Base(p) != "meta.properties" {
 			p = filepath.Join(p, "meta.properties")
 		}
 		if _, ok := seen[p]; ok {
