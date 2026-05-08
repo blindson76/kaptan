@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -59,13 +60,23 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 func (w *Worker) runProbe(ctx context.Context) error {
 	log.Printf("[kafka-worker] offline status probe starting")
 	clusterID := ""
+	reportNodeID := w.cfg.NodeID
 	eligible := true
 	reason := "meta.properties not found (uninitialized member)"
-
-	if err := w.cleanupDataDirs(); err != nil {
+	clusterID, diskNodeID, foundMeta, err := w.readLocalMetaProperties()
+	if err != nil {
 		eligible = false
-		reason = fmt.Sprintf("data dir cleanup failed: %v", err)
-		log.Printf("[kafka-worker] offline status probe data dir cleanup failed: %v", err)
+		reason = fmt.Sprintf("meta.properties probe failed: %v", err)
+		log.Printf("[kafka-worker] offline status probe failed: %v", err)
+	} else if foundMeta {
+		reason = ""
+		if reportNodeID == "" {
+			reportNodeID = diskNodeID
+		}
+		if w.cfg.NodeID != "" && diskNodeID != "" && w.cfg.NodeID != diskNodeID {
+			eligible = false
+			reason = fmt.Sprintf("node.id mismatch in meta.properties: expected=%s actual=%s", w.cfg.NodeID, diskNodeID)
+		}
 	}
 
 	rep := types.CandidateReport{
@@ -73,7 +84,7 @@ func (w *Worker) runProbe(ctx context.Context) error {
 		Kind:                types.CandidateKafka,
 		Host:                w.cfg.Host,
 		KafkaClusterID:      clusterID,
-		KafkaNodeID:         w.cfg.NodeID,
+		KafkaNodeID:         reportNodeID,
 		KafkaBrokerAddr:     w.cfg.BrokerAddr,
 		KafkaControllerAddr: w.cfg.ControllerAddr,
 		KafkaStorageID:      w.cfg.StorageID,
@@ -100,10 +111,10 @@ func (w *Worker) runProbe(ctx context.Context) error {
 	return nil
 }
 
-func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {
+func readMetaProperties(path string) (clusterID, nodeID string, ok bool, err error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", false
+		return "", "", false, err
 	}
 	defer f.Close()
 
@@ -124,28 +135,50 @@ func readMetaProperties(path string) (clusterID, nodeID string, ok bool) {
 			}
 		}
 	}
-	if clusterID == "" && nodeID == "" {
-		return "", "", false
+	if err := s.Err(); err != nil {
+		return "", "", false, err
 	}
-	return clusterID, nodeID, true
+	if clusterID == "" && nodeID == "" {
+		return "", "", false, nil
+	}
+	return clusterID, nodeID, true, nil
 }
 
-func (w *Worker) cleanupDataDirs() error {
-	paths := []string{w.cfg.LogDir, w.cfg.MetaLogDir}
-	for _, d := range paths {
-		if d == "" {
-			continue
-		}
-		_, err := os.ReadDir(d)
+func (w *Worker) readLocalMetaProperties() (clusterID, nodeID string, found bool, err error) {
+	for _, p := range w.metaPropertiesPaths() {
+		clusterID, nodeID, found, err := readMetaProperties(p)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return fmt.Errorf("read dir %s: %w", d, err)
+			return "", "", false, fmt.Errorf("read %s: %w", p, err)
 		}
-		if err := os.RemoveAll(d); err != nil {
-			return fmt.Errorf("remove dir %s: %w", d, err)
+		if found {
+			return clusterID, nodeID, true, nil
 		}
 	}
-	return nil
+	return "", "", false, nil
+}
+
+func (w *Worker) metaPropertiesPaths() []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(w.cfg.MetaDirs)+2)
+	paths := make([]string, 0, len(w.cfg.MetaDirs)+2)
+	paths = append(paths, w.cfg.MetaDirs...)
+	paths = append(paths, w.cfg.MetaLogDir, w.cfg.LogDir)
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		if !strings.EqualFold(filepath.Base(p), "meta.properties") {
+			p = filepath.Join(p, "meta.properties")
+		}
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
 }
