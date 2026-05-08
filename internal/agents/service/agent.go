@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,16 +31,19 @@ type Agent struct {
 	kv  store.KV
 	reg servicereg.Registry
 	// running processes by service name
-	mu      sync.Mutex
-	procs   map[string]*procHandle
-	stopped map[string]time.Time
-	lastMu  sync.Mutex
-	last    map[string]lastOrder
+	mu     sync.Mutex
+	procs  map[string]*procHandle
+	lastMu sync.Mutex
+	last   map[string]lastOrder
 }
 
 type procHandle struct {
-	cmd     *exec.Cmd
-	logFile *os.File
+	cmd       *exec.Cmd
+	logFile   *os.File
+	serviceID string
+	checkID   string
+	stopCh    chan struct{}
+	stopOnce  sync.Once
 }
 
 type serviceCounter struct {
@@ -55,12 +59,11 @@ type lastOrder struct {
 
 func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
 	return &Agent{
-		cfg:     cfg,
-		kv:      kv,
-		reg:     reg,
-		procs:   map[string]*procHandle{},
-		stopped: map[string]time.Time{},
-		last:    map[string]lastOrder{},
+		cfg:   cfg,
+		kv:    kv,
+		reg:   reg,
+		procs: map[string]*procHandle{},
+		last:  map[string]lastOrder{},
 	}
 }
 
@@ -139,7 +142,6 @@ func (a *Agent) execute(ctx context.Context, ord orders.Order) {
 	case orders.ActionStart:
 		err = a.startService(ctx, svcName, role, cmdStr, args, workDir, ord.Payload)
 	case orders.ActionStop:
-		a.markStopped(svcName)
 		err = a.stopService(svcName)
 	default:
 		err = nil
@@ -171,7 +173,6 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	}
 	// stop existing
 	_ = a.stopService(name)
-	a.clearStopped(name)
 
 	args = append([]string{fmt.Sprintf("-DDEFAULT_REDUNDANCY_MODE=%s", strings.ToUpper(role))}, args...)
 	log.Printf("[service-agent] starting proc name:%v, role:%v, cmd:%v, args:%v", name, role, cmdStr, args)
@@ -189,13 +190,29 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 		_ = logFile.Close()
 		return err
 	}
+	pid := 0
+	if cmd.Process != nil {
+		pid = cmd.Process.Pid
+	}
+	instanceToken := strconv.Itoa(pid)
+	if pid <= 0 {
+		instanceToken = fmt.Sprintf("startup-%d", time.Now().UnixNano())
+	}
+	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, instanceToken)
+	checkID := fmt.Sprintf("check:%s", serviceID)
+	handle := &procHandle{
+		cmd:       cmd,
+		logFile:   logFile,
+		serviceID: serviceID,
+		checkID:   checkID,
+		stopCh:    make(chan struct{}),
+	}
 	a.mu.Lock()
-	a.procs[name] = &procHandle{cmd: cmd, logFile: logFile}
+	a.procs[name] = handle
 	a.mu.Unlock()
-	log.Printf("[service-agent] started service=%s role=%s pid=%d log=%s", name, role, cmd.Process.Pid, logPath)
+	log.Printf("[service-agent] started service=%s role=%s pid=%d log=%s", name, role, pid, logPath)
 
 	// Register service with TTL note that includes role + pid
-	checkID := ""
 	if a.reg != nil {
 		ttl := "15s"
 		if v, ok := payload["ttl"].(string); ok && v != "" {
@@ -219,8 +236,6 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 			h, _ := os.Hostname()
 			addr = h
 		}
-		svcID := fmt.Sprintf("%s-%s", name, role)
-		checkID = fmt.Sprintf("check:%s", svcID)
 		tags := []string{}
 		if tAny, ok := payload["tags"].([]any); ok {
 			for _, x := range tAny {
@@ -234,40 +249,41 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 		}
 		_ = a.reg.Register(ctx, servicereg.Registration{
 			Name:    name,
-			ID:      svcID,
+			ID:      serviceID,
 			Address: addr,
 			Port:    0,
 			Tags:    tags,
 			CheckID: checkID,
 			TTL:     ttl,
 		})
-		note := map[string]any{"service": map[string]any{"name": name, "role": role, "pid": cmd.Process.Pid}}
+		note := map[string]any{"service": map[string]any{"name": name, "role": role, "pid": pid}}
 		b, _ := json.Marshal(note)
 		_ = a.reg.SetTTL(ctx, checkID, servicereg.StatusPassing, string(b))
 		// Heartbeat loop
-		go func() {
+		go func(handle *procHandle) {
 			t := time.NewTicker(heartbeatEvery)
 			defer t.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
+				case <-handle.stopCh:
+					return
 				case <-t.C:
 					if a.reg == nil {
 						return
 					}
-					// if process ended, mark critical
 					if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
-						_ = a.reg.SetTTL(ctx, checkID, servicereg.StatusCritical, "{\"service\":{\"state\":\"exited\"}}")
+						log.Printf("[service-agent] heartbeat stopping service=%s reason=process-exited", name)
 						return
 					}
 					_ = a.reg.SetTTL(ctx, checkID, servicereg.StatusPassing, string(b))
 				}
 			}
-		}()
+		}(handle)
 	}
 
-	go a.waitForExit(name, cmd, logFile, checkID)
+	go a.waitForExit(name, handle)
 	return nil
 }
 
@@ -279,13 +295,11 @@ func (a *Agent) stopService(name string) error {
 	if handle == nil {
 		return nil
 	}
+	handle.stop()
 	if handle.cmd != nil && handle.cmd.Process != nil {
 		_ = handle.cmd.Process.Kill()
 	}
-	if handle.logFile != nil {
-		_ = handle.logFile.Close()
-	}
-	delete(a.procs, name)
+	a.deregister(handle.serviceID)
 	return nil
 }
 
@@ -314,11 +328,11 @@ func openServiceLogFile(workDir, name, role, agentID string) (string, *os.File, 
 	return logPath, logFile, nil
 }
 
-func (a *Agent) waitForExit(name string, cmd *exec.Cmd, logFile *os.File, checkID string) {
-	err := cmd.Wait()
-	a.safeClose(logFile)
-	if a.wasStopped(name) {
-		a.cleanupProc(name, cmd)
+func (a *Agent) waitForExit(name string, handle *procHandle) {
+	err := handle.cmd.Wait()
+	a.safeClose(handle.logFile)
+	if handle.stopped() {
+		a.cleanupProc(name, handle.cmd)
 		return
 	}
 	if err != nil {
@@ -326,11 +340,10 @@ func (a *Agent) waitForExit(name string, cmd *exec.Cmd, logFile *os.File, checkI
 	} else {
 		log.Printf("[service-agent] process exited service=%s", name)
 	}
-	if a.reg != nil && checkID != "" && a.isCurrentProcess(name, cmd) {
-		_ = a.reg.SetTTL(context.Background(), checkID, servicereg.StatusCritical, "{\"service\":{\"state\":\"exited\"}}")
-	}
+	handle.stop()
+	a.deregister(handle.serviceID)
 	a.incrementRestartCount(context.Background(), name)
-	a.cleanupProc(name, cmd)
+	a.cleanupProc(name, handle.cmd)
 }
 
 func (a *Agent) cleanupProc(name string, cmd *exec.Cmd) {
@@ -342,13 +355,6 @@ func (a *Agent) cleanupProc(name string, cmd *exec.Cmd) {
 	a.mu.Unlock()
 }
 
-func (a *Agent) isCurrentProcess(name string, cmd *exec.Cmd) bool {
-	a.mu.Lock()
-	handle := a.procs[name]
-	a.mu.Unlock()
-	return handle != nil && handle.cmd == cmd
-}
-
 func (a *Agent) safeClose(f *os.File) {
 	if f == nil {
 		return
@@ -356,35 +362,46 @@ func (a *Agent) safeClose(f *os.File) {
 	_ = f.Close()
 }
 
-func (a *Agent) markStopped(name string) {
-	if name == "" {
+func (a *Agent) deregister(serviceID string) {
+	if a.reg == nil || serviceID == "" {
 		return
 	}
-	a.mu.Lock()
-	a.stopped[name] = time.Now()
-	a.mu.Unlock()
+	_ = a.reg.Deregister(context.Background(), serviceID)
 }
 
-func (a *Agent) clearStopped(name string) {
-	if name == "" {
+func (h *procHandle) stop() {
+	if h == nil {
 		return
 	}
-	a.mu.Lock()
-	delete(a.stopped, name)
-	a.mu.Unlock()
+	h.stopOnce.Do(func() {
+		close(h.stopCh)
+	})
 }
 
-func (a *Agent) wasStopped(name string) bool {
-	if name == "" {
+func (h *procHandle) stopped() bool {
+	if h == nil {
 		return false
 	}
-	a.mu.Lock()
-	_, ok := a.stopped[name]
-	if ok {
-		delete(a.stopped, name)
+	select {
+	case <-h.stopCh:
+		return true
+	default:
+		return false
 	}
-	a.mu.Unlock()
-	return ok
+}
+
+func serviceInstanceID(name, role, agentID string, instanceToken string) string {
+	nodeID := agentID
+	if nodeID == "" {
+		nodeID = "node"
+	}
+	if role == "" {
+		role = "unknown"
+	}
+	if instanceToken == "" {
+		instanceToken = fmt.Sprintf("startup-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%s-%s-%s", name, role, nodeID, instanceToken)
 }
 
 func (a *Agent) incrementRestartCount(ctx context.Context, svcName string) {

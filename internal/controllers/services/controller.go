@@ -33,15 +33,15 @@ type Config struct {
 }
 
 type ServiceDef struct {
-	Name               string
-	Instances          int
-	Tags               []string
-	TTL                string
-	DependsOn          []string
-	DependsMinPassing  int
-	StartCmd           string
-	StartArgs          []string
-	WorkDir            string
+	Name              string
+	Instances         int
+	Tags              []string
+	TTL               string
+	DependsOn         []string
+	DependsMinPassing int
+	StartCmd          string
+	StartArgs         []string
+	WorkDir           string
 }
 
 type Controller struct {
@@ -60,6 +60,16 @@ type serviceCounter struct {
 	Count     int64     `json:"count"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type serviceInstance struct {
+	NodeID string
+	Role   string
+}
+
+const (
+	serviceRoleMaster = "master"
+	serviceRoleSlave  = "slave"
+)
 
 func New(cfg Config, kv store.KV, locker interface {
 	Acquire(context.Context, string, string) (func() error, error)
@@ -194,8 +204,6 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 		log.Printf("[services] no candidates")
 		return
 	}
-	n := len(c.candidates)
-	firstNext := 0
 	for si, svc := range c.cfg.Services {
 		if !c.depsReadyForService(svc) {
 			log.Printf("[services] waiting service dependencies service=%s deps=%v", svc.Name, svc.DependsOn)
@@ -208,50 +216,41 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 		if inst > 2 {
 			inst = 2
 		}
-		if inst > n {
-			inst = n
+		if inst > len(c.candidates) {
+			inst = len(c.candidates)
 		}
-		activeNodes, activeCount, ok := c.activeServiceNodes(ctx, svc.Name)
+		activeInstances, ok := c.activeServiceInstances(ctx, svc.Name)
 		if !ok {
 			continue
 		}
-		if activeCount >= inst {
-			continue
+		plan := buildPlacementPlan(activeInstances, desiredRoles(inst))
+		start := 0
+		if len(c.candidates) > 0 {
+			start = si % len(c.candidates)
 		}
-		need := inst - activeCount
-		used := map[string]bool{}
-		isReplacement := activeCount > 0
+		targeted := map[string]bool{}
+		isReplacement := len(activeInstances) > 0
 
-		if activeCount == 0 && need > 0 {
-			if id, ok := pickCandidate(c.candidates, activeNodes, used, firstNext); ok {
-				firstNext++
-				if firstNext >= n {
-					firstNext = 0
-				}
-				c.issueOrder(ctx, svc, id, "master")
-				if isReplacement {
-					c.incrementReplacementCount(ctx, svc.Name)
-				}
-				used[id] = true
-				need--
-			}
-		}
-
-		start := si % n
-		for i := 0; need > 0 && i < n; i++ {
-			id := c.candidates[(start+i)%n]
-			if activeNodes[id] || used[id] {
+		for _, role := range plan.MissingRoles {
+			id, ok := pickPlacementNode(c.candidates, plan.UsedNodes, plan.ActiveNodes, targeted, start)
+			if !ok {
+				log.Printf("[services] not enough candidates to place service=%s role=%s instances=%d total=%d", svc.Name, role, len(activeInstances), len(c.candidates))
 				continue
 			}
-			c.issueOrder(ctx, svc, id, "slave")
+			c.issueOrder(ctx, svc, id, role)
 			if isReplacement {
 				c.incrementReplacementCount(ctx, svc.Name)
 			}
-			used[id] = true
-			need--
+			plan.UsedNodes[id] = true
+			targeted[id] = true
+			start = nextStartIndex(c.candidates, id)
 		}
-		if need > 0 {
-			log.Printf("[services] not enough candidates to place service=%s need=%d active=%d total=%d", svc.Name, need, activeCount, n)
+
+		for _, id := range plan.ExtraNodes {
+			if targeted[id] {
+				continue
+			}
+			c.issueStopOrder(ctx, svc.Name, id)
 		}
 	}
 }
@@ -280,25 +279,35 @@ func (c *Controller) depsReadyForService(svc ServiceDef) bool {
 	return true
 }
 
-func (c *Controller) activeServiceNodes(ctx context.Context, svcName string) (map[string]bool, int, bool) {
-	active := map[string]bool{}
+func (c *Controller) activeServiceInstances(ctx context.Context, svcName string) ([]serviceInstance, bool) {
+	active := []serviceInstance{}
 	if c.consul == nil {
-		return active, 0, true
+		return active, true
 	}
 	ents, _, err := c.consul.Health().Service(svcName, "", true, nil)
 	if err != nil {
 		log.Printf("[services] health check error service=%s: %v", svcName, err)
-		return nil, 0, false
+		return nil, false
 	}
 	for _, ent := range ents {
-		if ent == nil || ent.Node == nil {
+		if ent == nil || ent.Node == nil || ent.Service == nil {
 			continue
 		}
 		if ent.Node.Node != "" {
-			active[ent.Node.Node] = true
+			active = append(active, serviceInstance{
+				NodeID: ent.Node.Node,
+				Role:   serviceRoleFromTags(ent.Service.Tags),
+			})
 		}
 	}
-	return active, len(ents), true
+	// lexicographic ordering keeps placement deterministic so reconciles keep preferring the same healthy instances.
+	sort.Slice(active, func(i, j int) bool {
+		if active[i].NodeID != active[j].NodeID {
+			return active[i].NodeID < active[j].NodeID
+		}
+		return active[i].Role < active[j].Role
+	})
+	return active, true
 }
 
 func pickCandidate(candidates []string, active map[string]bool, used map[string]bool, start int) (string, bool) {
@@ -314,6 +323,135 @@ func pickCandidate(candidates []string, active map[string]bool, used map[string]
 		return id, true
 	}
 	return "", false
+}
+
+type placementPlan struct {
+	ActiveNodes  map[string]bool
+	UsedNodes    map[string]bool
+	MissingRoles []string
+	ExtraNodes   []string
+}
+
+func buildPlacementPlan(instances []serviceInstance, roles []string) placementPlan {
+	plan := placementPlan{
+		ActiveNodes: make(map[string]bool),
+		UsedNodes:   make(map[string]bool),
+	}
+	if len(roles) == 0 {
+		plan.ExtraNodes = uniqueNodeOrder(instances, nil)
+		return plan
+	}
+
+	kept := make([]bool, len(instances))
+	for _, inst := range instances {
+		if inst.NodeID == "" {
+			continue
+		}
+		plan.ActiveNodes[inst.NodeID] = true
+	}
+
+	for _, role := range roles {
+		idx := findMatchingInstance(instances, kept, plan.UsedNodes, role)
+		if idx < 0 {
+			plan.MissingRoles = append(plan.MissingRoles, role)
+			continue
+		}
+		kept[idx] = true
+		plan.UsedNodes[instances[idx].NodeID] = true
+	}
+
+	plan.ExtraNodes = uniqueNodeOrder(instances, kept)
+	return plan
+}
+
+func desiredRoles(instances int) []string {
+	if instances <= 0 {
+		return nil
+	}
+	// Services are limited to a master/slave pair, so requests above two still map to those two roles.
+	roles := []string{serviceRoleMaster}
+	if instances > 1 {
+		roles = append(roles, serviceRoleSlave)
+	}
+	return roles
+}
+
+func findMatchingInstance(instances []serviceInstance, kept []bool, usedNodes map[string]bool, role string) int {
+	for i, inst := range instances {
+		if kept[i] || inst.NodeID == "" || usedNodes[inst.NodeID] {
+			continue
+		}
+		if inst.Role == role {
+			return i
+		}
+	}
+	return -1
+}
+
+func uniqueNodeOrder(instances []serviceInstance, kept []bool) []string {
+	nodes := []string{}
+	seen := map[string]bool{}
+	for i, inst := range instances {
+		if inst.NodeID == "" {
+			continue
+		}
+		if kept != nil && kept[i] {
+			continue
+		}
+		if seen[inst.NodeID] {
+			continue
+		}
+		seen[inst.NodeID] = true
+		nodes = append(nodes, inst.NodeID)
+	}
+	return nodes
+}
+
+func pickPlacementNode(candidates []string, usedNodes, activeNodes, targeted map[string]bool, start int) (string, bool) {
+	if id, ok := pickCandidateWithFilter(candidates, usedNodes, targeted, activeNodes, start, false); ok {
+		return id, true
+	}
+	return pickCandidateWithFilter(candidates, usedNodes, targeted, activeNodes, start, true)
+}
+
+func pickCandidateWithFilter(candidates []string, usedNodes, targeted, activeNodes map[string]bool, start int, allowActive bool) (string, bool) {
+	n := len(candidates)
+	if n == 0 {
+		return "", false
+	}
+	for i := 0; i < n; i++ {
+		id := candidates[(start+i)%n]
+		if usedNodes[id] || targeted[id] {
+			continue
+		}
+		if !allowActive && activeNodes[id] {
+			continue
+		}
+		return id, true
+	}
+	return "", false
+}
+
+func nextStartIndex(candidates []string, picked string) int {
+	for i, id := range candidates {
+		if id == picked {
+			if i+1 >= len(candidates) {
+				return 0
+			}
+			return i + 1
+		}
+	}
+	return 0
+}
+
+func serviceRoleFromTags(tags []string) string {
+	for _, tag := range tags {
+		switch tag {
+		case serviceRoleMaster, serviceRoleSlave:
+			return tag
+		}
+	}
+	return ""
 }
 
 func (c *Controller) issueOrder(ctx context.Context, svc ServiceDef, id string, role string) {
@@ -335,6 +473,22 @@ func (c *Controller) issueOrder(ctx context.Context, svc ServiceDef, id string, 
 	}
 	orderKey := "orders/services/" + svc.Name + "/" + id
 	log.Printf("[services] order publish service=%s role=%s target=%s action=%s epoch=%d key=%s", svc.Name, role, id, ord.Action, ord.Epoch, orderKey)
+	_ = orders.SaveWithHistory(ctx, c.kv, orderKey, ord, c.cfg.OrderHistoryKeep)
+}
+
+func (c *Controller) issueStopOrder(ctx context.Context, svcName string, id string) {
+	ord := orders.Order{
+		Kind:     orders.KindService,
+		TargetID: id,
+		Action:   orders.ActionStop,
+		Epoch:    time.Now().Unix(),
+		IssuedAt: time.Now(),
+		Payload: map[string]any{
+			"service": svcName,
+		},
+	}
+	orderKey := "orders/services/" + svcName + "/" + id
+	log.Printf("[services] order publish service=%s target=%s action=%s epoch=%d key=%s", svcName, id, ord.Action, ord.Epoch, orderKey)
 	_ = orders.SaveWithHistory(ctx, c.kv, orderKey, ord, c.cfg.OrderHistoryKeep)
 }
 
