@@ -1,0 +1,20 @@
+node.id=${NODE_ID}
+process.roles=broker,controller
+
+listeners=PLAINTEXT://${BROKER_ADDR},CONTROLLER://${CONTROLLER_ADDR}
+advertised.listeners=PLAINTEXT://${BROKER_ADDR}
+inter.broker.listener.name=PLAINTEXT
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+
+controller.quorum.bootstrap.servers=${BOOTSTRAP_CONTROLLERS}
+# Replication defaults
+default.replication.factor=3
+min.insync.replicas=2
+
+num.partitions=3
+
+# (optional but recommended)
+unclean.leader.election.enable=false
+log.dirs=${LOG_DIR}
+metadata.log.dir=${META_LOG_DIR}

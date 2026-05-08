@@ -31,6 +31,7 @@ type Config struct {
 
 	KafkaBinDir string
 	WorkDir     string
+	ServerPropertiesTemplate string
 	LogDir      string
 	MetaLogDir  string
 
@@ -44,6 +45,28 @@ type Config struct {
 	Service   servicereg.Registration
 	PropsPath string
 }
+
+const defaultServerPropertiesTemplate = `node.id=${NODE_ID}
+process.roles=broker,controller
+
+listeners=PLAINTEXT://${BROKER_ADDR},CONTROLLER://${CONTROLLER_ADDR}
+advertised.listeners=PLAINTEXT://${BROKER_ADDR}
+inter.broker.listener.name=PLAINTEXT
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+
+controller.quorum.bootstrap.servers=${BOOTSTRAP_CONTROLLERS}
+# Replication defaults
+default.replication.factor=3
+min.insync.replicas=2
+
+num.partitions=3
+
+# (optional but recommended)
+unclean.leader.election.enable=false
+log.dirs=${LOG_DIR}
+metadata.log.dir=${META_LOG_DIR}
+`
 
 type Agent struct {
 	cfg Config
@@ -359,29 +382,29 @@ func (a *Agent) renderProperties(bootstrap string) string {
 		bs = a.cfg.ControllerAddr
 	}
 	nodeID := a.nodeID()
-	logDir := escapeWindowsPath(a.cfg.LogDir)
-	metaLogDir := escapeWindowsPath(a.cfg.MetaLogDir)
-	return fmt.Sprintf(`node.id=%s
-process.roles=broker,controller
-
-listeners=PLAINTEXT://%s,CONTROLLER://%s
-advertised.listeners=PLAINTEXT://%s
-inter.broker.listener.name=PLAINTEXT
-controller.listener.names=CONTROLLER
-listener.security.protocol.map=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-
-controller.quorum.bootstrap.servers=%s
-# Replication defaults
-default.replication.factor=3
-min.insync.replicas=2
-
-num.partitions=3
-
-# (optional but recommended)
-unclean.leader.election.enable=false
-log.dirs=%s
-metadata.log.dir=%s
-`, nodeID, a.cfg.BrokerAddr, a.cfg.ControllerAddr, a.cfg.BrokerAddr, bs, logDir, metaLogDir)
+	vals := map[string]string{
+		"NODE_ID":               nodeID,
+		"BROKER_ADDR":           a.cfg.BrokerAddr,
+		"CONTROLLER_ADDR":       a.cfg.ControllerAddr,
+		"BOOTSTRAP_CONTROLLERS": bs,
+		"LOG_DIR":               escapeWindowsPath(a.cfg.LogDir),
+		"META_LOG_DIR":          escapeWindowsPath(a.cfg.MetaLogDir),
+	}
+	tpl := defaultServerPropertiesTemplate
+	if p := strings.TrimSpace(a.cfg.ServerPropertiesTemplate); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			log.Printf("[kafka-agent] cannot read server.properties template %q: %v (using default template)", p, err)
+		} else {
+			tpl = string(b)
+		}
+	}
+	return os.Expand(tpl, func(key string) string {
+		if v, ok := vals[key]; ok {
+			return v
+		}
+		return os.Getenv(key)
+	})
 }
 
 func (a *Agent) nodeID() string {
