@@ -234,7 +234,7 @@ func (c *Controller) placeAndIssueOrders(ctx context.Context) {
 		for _, role := range plan.MissingRoles {
 			id, ok := pickPlacementNode(c.candidates, plan.UsedNodes, plan.ActiveNodes, targeted, start)
 			if !ok {
-				log.Printf("[services] not enough candidates to place service=%s role=%s active=%d total=%d", svc.Name, role, len(activeInstances), len(c.candidates))
+				log.Printf("[services] not enough candidates to place service=%s role=%s instances=%d total=%d", svc.Name, role, len(activeInstances), len(c.candidates))
 				continue
 			}
 			c.issueOrder(ctx, svc, id, role)
@@ -300,7 +300,7 @@ func (c *Controller) activeServiceInstances(ctx context.Context, svcName string)
 			})
 		}
 	}
-	// Lexicographic ordering keeps placement deterministic so reconciles keep preferring the same healthy instances.
+	// lexicographic ordering keeps placement deterministic so reconciles keep preferring the same healthy instances.
 	sort.Slice(active, func(i, j int) bool {
 		if active[i].NodeID != active[j].NodeID {
 			return active[i].NodeID < active[j].NodeID

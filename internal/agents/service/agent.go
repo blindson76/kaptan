@@ -194,9 +194,9 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
-	instanceToken := fmt.Sprintf("startup-%d", time.Now().UnixNano())
-	if pid > 0 {
-		instanceToken = strconv.Itoa(pid)
+	instanceToken := strconv.Itoa(pid)
+	if pid <= 0 {
+		instanceToken = fmt.Sprintf("startup-%d", time.Now().UnixNano())
 	}
 	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, instanceToken)
 	checkID := fmt.Sprintf("check:%s", serviceID)
@@ -274,6 +274,7 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 						return
 					}
 					if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+						log.Printf("[service-agent] heartbeat stopping service=%s reason=process-exited", name)
 						return
 					}
 					_ = a.reg.SetTTL(ctx, checkID, servicereg.StatusPassing, string(b))
