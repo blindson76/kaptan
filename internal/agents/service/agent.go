@@ -189,12 +189,12 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 		_ = logFile.Close()
 		return err
 	}
-	svcID := serviceInstanceID(name, role, a.cfg.AgentID, cmd.Process.Pid)
-	checkID := fmt.Sprintf("check:%s", svcID)
+	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, cmd.Process.Pid)
+	checkID := fmt.Sprintf("check:%s", serviceID)
 	handle := &procHandle{
 		cmd:       cmd,
 		logFile:   logFile,
-		serviceID: svcID,
+		serviceID: serviceID,
 		checkID:   checkID,
 		stopCh:    make(chan struct{}),
 	}
@@ -240,7 +240,7 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 		}
 		_ = a.reg.Register(ctx, servicereg.Registration{
 			Name:    name,
-			ID:      svcID,
+			ID:      serviceID,
 			Address: addr,
 			Port:    0,
 			Tags:    tags,
