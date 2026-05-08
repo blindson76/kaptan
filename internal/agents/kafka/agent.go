@@ -403,7 +403,7 @@ func (a *Agent) renderProperties(bootstrap string) string {
 		if v, ok := vals[key]; ok {
 			return v
 		}
-		return os.Getenv(key)
+		return ""
 	})
 }
 
