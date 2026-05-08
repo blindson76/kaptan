@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -193,7 +194,11 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	if cmd.Process != nil {
 		pid = cmd.Process.Pid
 	}
-	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, pid)
+	instanceToken := fmt.Sprintf("startup-%d", time.Now().UnixNano())
+	if pid > 0 {
+		instanceToken = strconv.Itoa(pid)
+	}
+	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, instanceToken)
 	checkID := fmt.Sprintf("check:%s", serviceID)
 	handle := &procHandle{
 		cmd:       cmd,
@@ -384,7 +389,7 @@ func (h *procHandle) stopped() bool {
 	}
 }
 
-func serviceInstanceID(name, role, agentID string, pid int) string {
+func serviceInstanceID(name, role, agentID string, instanceToken string) string {
 	nodeID := agentID
 	if nodeID == "" {
 		nodeID = "node"
@@ -392,7 +397,10 @@ func serviceInstanceID(name, role, agentID string, pid int) string {
 	if role == "" {
 		role = "unknown"
 	}
-	return fmt.Sprintf("%s-%s-%s-%d", name, role, nodeID, pid)
+	if instanceToken == "" {
+		instanceToken = fmt.Sprintf("startup-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%s-%s-%s", name, role, nodeID, instanceToken)
 }
 
 func (a *Agent) incrementRestartCount(ctx context.Context, svcName string) {

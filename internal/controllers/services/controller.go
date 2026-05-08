@@ -300,7 +300,7 @@ func (c *Controller) activeServiceInstances(ctx context.Context, svcName string)
 			})
 		}
 	}
-	// Keep placement decisions stable so the same healthy instances are preferred across reconciles.
+	// Lexicographic ordering keeps placement deterministic so reconciles keep preferring the same healthy instances.
 	sort.Slice(active, func(i, j int) bool {
 		if active[i].NodeID != active[j].NodeID {
 			return active[i].NodeID < active[j].NodeID
@@ -368,6 +368,7 @@ func desiredRoles(instances int) []string {
 	if instances <= 0 {
 		return nil
 	}
+	// Services are limited to a master/slave pair, so requests above two still map to those two roles.
 	roles := []string{serviceRoleMaster}
 	if instances > 1 {
 		roles = append(roles, serviceRoleSlave)
