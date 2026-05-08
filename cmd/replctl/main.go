@@ -269,6 +269,7 @@ func main() {
 			AckKey:         cfg.Tasks.KafkaAgent.AckKey,
 			KafkaBinDir:    cfg.Tasks.KafkaAgent.KafkaBinDir,
 			WorkDir:        cfg.Tasks.KafkaAgent.WorkDir,
+			ServerPropertiesTemplate: cfg.Tasks.KafkaAgent.ServerPropertiesTemplate,
 			LogDir:         cfg.Tasks.KafkaAgent.LogDir,
 			MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
 			HealthKey:      cfg.Tasks.KafkaAgent.HealthKey,

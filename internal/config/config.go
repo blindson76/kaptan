@@ -190,6 +190,7 @@ type KafkaAgentConfig struct {
 
 	KafkaBinDir    string `yaml:"kafka_bin_dir"`
 	WorkDir        string `yaml:"work_dir"`
+	ServerPropertiesTemplate string `yaml:"server_properties_template"`
 	LogDir         string `yaml:"log_dir"`
 	MetaLogDir     string `yaml:"meta_log_dir"`
 	BrokerAddr     string `yaml:"broker_addr"`

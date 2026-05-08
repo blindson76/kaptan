@@ -70,6 +70,7 @@ tasks:
     health_key: 'health/kafka/${env.NODE_NAME}'
     kafka_bin_dir: '${env.KAFKA_TOOLS}'
     work_dir: '${env.CMS_ROOT}'
+    server_properties_template: '${env.CMS_ROOT}/server.properties.template'
     log_dir: '${env.KAFKA_DATA_DIR}'
     meta_log_dir: '${env.KAFKA_META_DIR}'
     broker_addr: '${env.CSB_IP}:9092'
