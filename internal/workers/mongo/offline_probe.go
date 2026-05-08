@@ -134,7 +134,8 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	// remove replset config document (best-effort) to allow standalone start later
 	//_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
 
-	stopCtx, _ := context.WithTimeout(ctx, time.Second*5)
+	stopCtx, stopCancel := context.WithTimeout(ctx, time.Second*5)
+	defer stopCancel()
 	err = cli.Database("admin").RunCommand(stopCtx, bson.D{{Key: "shutdown", Value: 1}}).Err()
 	log.Printf("[mongo-worker] shutdown command:%v", err)
 
@@ -153,11 +154,11 @@ func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) 
 	}).Decode(&res)
 	// If already exists, do nothing.
 	if users, ok := res["users"].(bson.A); ok && len(users) > 0 {
-		log.Printf("[mongo-worker] user alreday exits")
+		log.Printf("[mongo-worker] user already exists")
 		return
 	}
 	// create user
-	log.Printf("[mongo-worker] createing user user:%v pass:%v", user, pass)
+	log.Printf("[mongo-worker] creating user user:%v pass:%v", user, pass)
 	err := cli.Database("admin").RunCommand(ctx, bson.D{
 		{Key: "createUser", Value: user},
 		{Key: "pwd", Value: pass},
