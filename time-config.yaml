@@ -1,0 +1,96 @@
+node_name: '${env.NODE_NAME}'
+
+consul:
+  address: '${env.CONSUL_HTTP_ADDR}'
+  datacenter: ''
+  token: '${env.CONSUL_HTTP_TOKEN}'
+  prefix: 'replctl/v1'
+  order_history_keep: 10
+
+tasks:
+
+  # ---------------------------------------------------------------------------
+  # Time Controller
+  #
+  # Runs as a single active instance (leader-elected via lock_key).
+  # Manages time mode across the cluster:
+  #   auto      – each agent runs Meinberg ntpd pointed at external_servers;
+  #               all agent peers are also listed as NTP servers in orphan mode.
+  #   handover  – triggered automatically when no external source is reachable;
+  #               controller elects one agent as time master and disciplines all
+  #               others through it.
+  #   manual    – operator-initiated; controller broadcasts a specific wall-clock
+  #               value to agents as an order with an auto-incrementing order
+  #               number.
+  # ---------------------------------------------------------------------------
+  time_controller:
+    enabled: true
+    instance_number: 1                        # set 1 on primary node, 2 on standby, etc.
+    controller_id: ''                          # if empty → NODE_NAME + #instance_number
+    lock_key:       'locks/time-controller'
+    state_key:      'state/time-controller'
+    reports_prefix: 'reports/time'            # where agents publish their status reports
+    orders_prefix:  'orders/time'             # where controller publishes orders per agent
+    acks_prefix:    'acks/time'               # where agents acknowledge orders
+
+    # How often the controller polls agent reports and re-evaluates time mode.
+    reconcile_interval: '10s'
+
+    # Minimum number of agent reports that must be present before the controller
+    # makes any time-mode decision.
+    min_agent_reports: 3
+
+    # Default operating mode on startup: auto | handover | manual
+    default_mode: 'auto'
+
+    # External NTP servers used in auto mode.  The controller probes reachability
+    # and triggers handover mode when none are accessible.
+    external_servers:
+      - '${env.NTP_EXTERNAL_SERVER_1}'       # e.g. pool.ntp.org or GPS-disciplined source
+      - '${env.NTP_EXTERNAL_SERVER_2}'
+
+    # How long all external sources must be unreachable before switching to handover.
+    external_loss_timeout: '30s'
+
+    # How long after external sources recover to switch back to auto.
+    external_recovery_timeout: '60s'
+
+    # NTP stratum used by the elected time master in handover / orphan mode.
+    orphan_stratum: 5
+
+  # ---------------------------------------------------------------------------
+  # Time Agent
+  #
+  # Runs on every node.  On startup it reads the last persisted order from
+  # order_store_path and reports it to the controller.  Thereafter it watches
+  # for new orders, applies the requested time mode locally (by reconfiguring
+  # and restarting Meinberg ntpd), stores each accepted order to
+  # order_store_path, and publishes a status report back to Consul.
+  # ---------------------------------------------------------------------------
+  time_agent:
+    enabled: true
+    agent_id: '${env.NODE_NAME}'
+
+    # Consul keys for this specific agent instance.
+    report_key: 'reports/time/${env.NODE_NAME}'   # agent writes its status here
+    orders_key: 'orders/time/${env.NODE_NAME}'    # agent watches for controller orders
+    ack_key:    'acks/time/${env.NODE_NAME}'       # agent acknowledges orders here
+
+    # Path to the local file where the agent persists the last accepted order.
+    # Must be writable by the process; survives reboots.
+    order_store_path: '${env.TIME_ORDER_STORE_PATH}'   # e.g. /var/lib/replctl/time-order.json
+
+    # --- Meinberg ntpd integration ---
+    ntpd_bin:         '${env.MEINBERG_NTPD_BIN}'      # path to the ntpd executable
+    ntpd_config_path: '${env.MEINBERG_NTPD_CONF}'     # ntpd.conf managed by this agent
+    ntpd_service_name: '${env.MEINBERG_SERVICE_NAME}' # OS service name (for start/stop/restart)
+
+    # How often the agent polls ntpd sync status and refreshes its report.
+    report_interval: '10s'
+
+    # Health-check TTL advertised to Consul; must be > report_interval.
+    service:
+      enabled: true
+      address: '${env.CSB_IP}'
+      ttl: '15s'
+      tags: ['time', 'ntp']

@@ -9,6 +9,7 @@ const (
 	KindKafka   Kind = "kafka"
 	KindService Kind = "service"
 	KindHMI     Kind = "hmi"
+	KindTime    Kind = "time"
 )
 
 type Action string
@@ -23,6 +24,7 @@ const (
 	ActionAddController      Action = "add_controller"
 	ActionRemoveController   Action = "remove_controller"
 	ActionReassignPartitions Action = "reassign_partitions"
+	ActionSetMode            Action = "set_mode"
 )
 
 type Order struct {

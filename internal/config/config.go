@@ -37,6 +37,8 @@ type TasksConfig struct {
 	MongoAgent         MongoAgentConfig         `yaml:"mongo_agent"`
 	KafkaController    KafkaControllerConfig    `yaml:"kafka_controller"`
 	KafkaAgent         KafkaAgentConfig         `yaml:"kafka_agent"`
+	TimeController     TimeControllerConfig     `yaml:"time_controller"`
+	TimeAgent          TimeAgentConfig          `yaml:"time_agent"`
 }
 
 type MongoControllerConfig struct {
@@ -66,6 +68,49 @@ type KafkaControllerConfig struct {
 	ElectionInterval          time.Duration `yaml:"election_interval"`
 	InitialSettleDuration     time.Duration `yaml:"initial_settle_duration"`
 	AllowDegradedSingleMember bool          `yaml:"allow_degraded_single_member"`
+}
+
+type TimeControllerConfig struct {
+	Enabled        bool   `yaml:"enabled"`
+	InstanceNumber int    `yaml:"instance_number"`
+	ControllerID   string `yaml:"controller_id"`
+
+	LockKey       string `yaml:"lock_key"`
+	StateKey      string `yaml:"state_key"`
+	ReportsPrefix string `yaml:"reports_prefix"`
+	OrdersPrefix  string `yaml:"orders_prefix"`
+	AcksPrefix    string `yaml:"acks_prefix"`
+
+	ReconcileInterval       time.Duration `yaml:"reconcile_interval"`
+	MinAgentReports         int           `yaml:"min_agent_reports"`
+	DefaultMode             string        `yaml:"default_mode"`
+	ExternalServers         []string      `yaml:"external_servers"`
+	ExternalLossTimeout     time.Duration `yaml:"external_loss_timeout"`
+	ExternalRecoveryTimeout time.Duration `yaml:"external_recovery_timeout"`
+	OrphanStratum           int           `yaml:"orphan_stratum"`
+
+	// Optional KV key where operator request is read from.
+	// If empty, defaults to state_key + "/operator".
+	OperatorRequestKey string `yaml:"operator_request_key"`
+}
+
+type TimeAgentConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	AgentID string `yaml:"agent_id"`
+
+	ReportKey string `yaml:"report_key"`
+	OrdersKey string `yaml:"orders_key"`
+	AckKey    string `yaml:"ack_key"`
+
+	OrderStorePath string `yaml:"order_store_path"`
+
+	NtpdBin         string `yaml:"ntpd_bin"`
+	NtpdConfigPath  string `yaml:"ntpd_config_path"`
+	NtpdServiceName string `yaml:"ntpd_service_name"`
+
+	ReportInterval time.Duration `yaml:"report_interval"`
+
+	Service ServiceConfig `yaml:"service"`
 }
 
 func Load(path string) (*Config, error) {
@@ -110,6 +155,11 @@ func validate(c *Config) error {
 	if c.Tasks.HmiController.Enabled {
 		if c.Tasks.HmiController.InstanceNumber <= 0 {
 			return errors.New("tasks.hmi_controller.instance_number must be > 0 when enabled")
+		}
+	}
+	if c.Tasks.TimeController.Enabled {
+		if c.Tasks.TimeController.InstanceNumber <= 0 {
+			return errors.New("tasks.time_controller.instance_number must be > 0 when enabled")
 		}
 	}
 	return nil
@@ -188,16 +238,16 @@ type KafkaAgentConfig struct {
 	ReportKey string   `yaml:"report_key"`
 	MetaDirs  []string `yaml:"meta_dirs"`
 
-	KafkaBinDir    string `yaml:"kafka_bin_dir"`
-	WorkDir        string `yaml:"work_dir"`
+	KafkaBinDir              string `yaml:"kafka_bin_dir"`
+	WorkDir                  string `yaml:"work_dir"`
 	ServerPropertiesTemplate string `yaml:"server_properties_template"`
-	LogDir         string `yaml:"log_dir"`
-	MetaLogDir     string `yaml:"meta_log_dir"`
-	BrokerAddr     string `yaml:"broker_addr"`
-	ControllerAddr string `yaml:"controller_addr"`
-	ClusterID      string `yaml:"cluster_id"`
-	NodeID         string `yaml:"node_id"`
-	StorageID      string `yaml:"storage_id"`
+	LogDir                   string `yaml:"log_dir"`
+	MetaLogDir               string `yaml:"meta_log_dir"`
+	BrokerAddr               string `yaml:"broker_addr"`
+	ControllerAddr           string `yaml:"controller_addr"`
+	ClusterID                string `yaml:"cluster_id"`
+	NodeID                   string `yaml:"node_id"`
+	StorageID                string `yaml:"storage_id"`
 
 	Service ServiceConfig `yaml:"service"`
 }

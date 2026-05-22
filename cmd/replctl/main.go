@@ -15,11 +15,13 @@ import (
 	kafkaagent "github.com/umitbozkurt/consul-replctl/internal/agents/kafka"
 	mongoagent "github.com/umitbozkurt/consul-replctl/internal/agents/mongo"
 	serviceagent "github.com/umitbozkurt/consul-replctl/internal/agents/service"
+	timeagent "github.com/umitbozkurt/consul-replctl/internal/agents/time"
 	"github.com/umitbozkurt/consul-replctl/internal/config"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/hmi"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/kafka"
 	mctl "github.com/umitbozkurt/consul-replctl/internal/controllers/mongo"
 	sctl "github.com/umitbozkurt/consul-replctl/internal/controllers/services"
+	tctl "github.com/umitbozkurt/consul-replctl/internal/controllers/time"
 	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/providers/consulorders"
 	"github.com/umitbozkurt/consul-replctl/internal/runtime"
@@ -98,6 +100,10 @@ func main() {
 	kafkaControllerID := cfg.Tasks.KafkaController.ControllerID
 	if kafkaControllerID == "" && cfg.Tasks.KafkaController.Enabled {
 		kafkaControllerID = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.KafkaController.InstanceNumber)
+	}
+	timeControllerID := cfg.Tasks.TimeController.ControllerID
+	if timeControllerID == "" && cfg.Tasks.TimeController.Enabled {
+		timeControllerID = fmt.Sprintf("%s#%d", nodeName, cfg.Tasks.TimeController.InstanceNumber)
 	}
 
 	// Controllers are long-running but leader-elected.
@@ -264,22 +270,22 @@ func main() {
 			}
 		}
 		ag := kafkaagent.New(kafkaagent.Config{
-			AgentID:        cfg.Tasks.KafkaAgent.AgentID,
-			OrdersKey:      cfg.Tasks.KafkaAgent.OrdersKey,
-			AckKey:         cfg.Tasks.KafkaAgent.AckKey,
-			KafkaBinDir:    cfg.Tasks.KafkaAgent.KafkaBinDir,
-			WorkDir:        cfg.Tasks.KafkaAgent.WorkDir,
+			AgentID:                  cfg.Tasks.KafkaAgent.AgentID,
+			OrdersKey:                cfg.Tasks.KafkaAgent.OrdersKey,
+			AckKey:                   cfg.Tasks.KafkaAgent.AckKey,
+			KafkaBinDir:              cfg.Tasks.KafkaAgent.KafkaBinDir,
+			WorkDir:                  cfg.Tasks.KafkaAgent.WorkDir,
 			ServerPropertiesTemplate: cfg.Tasks.KafkaAgent.ServerPropertiesTemplate,
-			LogDir:         cfg.Tasks.KafkaAgent.LogDir,
-			MetaLogDir:     cfg.Tasks.KafkaAgent.MetaLogDir,
-			HealthKey:      cfg.Tasks.KafkaAgent.HealthKey,
-			SpecKey:        cfg.Tasks.KafkaAgent.SpecKey,
-			BrokerAddr:     cfg.Tasks.KafkaAgent.BrokerAddr,
-			ControllerAddr: cfg.Tasks.KafkaAgent.ControllerAddr,
-			ClusterID:      cfg.Tasks.KafkaAgent.ClusterID,
-			NodeID:         cfg.Tasks.KafkaAgent.NodeID,
-			StorageID:      cfg.Tasks.KafkaAgent.StorageID,
-			Service:        svc,
+			LogDir:                   cfg.Tasks.KafkaAgent.LogDir,
+			MetaLogDir:               cfg.Tasks.KafkaAgent.MetaLogDir,
+			HealthKey:                cfg.Tasks.KafkaAgent.HealthKey,
+			SpecKey:                  cfg.Tasks.KafkaAgent.SpecKey,
+			BrokerAddr:               cfg.Tasks.KafkaAgent.BrokerAddr,
+			ControllerAddr:           cfg.Tasks.KafkaAgent.ControllerAddr,
+			ClusterID:                cfg.Tasks.KafkaAgent.ClusterID,
+			NodeID:                   cfg.Tasks.KafkaAgent.NodeID,
+			StorageID:                cfg.Tasks.KafkaAgent.StorageID,
+			Service:                  svc,
 		}, st, reg)
 		go func() {
 			log.Printf("%s kafka_agent started", logPrefix)
@@ -305,6 +311,31 @@ func main() {
 			log.Printf("%s kafka controller started", logPrefix)
 			if err := ctl.Run(ctx); err != nil {
 				log.Printf("%s kafka controller stopped: %v", logPrefix, err)
+			}
+		}()
+	}
+	if cfg.Tasks.TimeController.Enabled {
+		ctl := tctl.New(tctl.Config{
+			ControllerID:            timeControllerID,
+			LockKey:                 cfg.Tasks.TimeController.LockKey,
+			StateKey:                cfg.Tasks.TimeController.StateKey,
+			ReportsPrefix:           cfg.Tasks.TimeController.ReportsPrefix,
+			OrdersPrefix:            cfg.Tasks.TimeController.OrdersPrefix,
+			AcksPrefix:              cfg.Tasks.TimeController.AcksPrefix,
+			ReconcileInterval:       cfg.Tasks.TimeController.ReconcileInterval,
+			MinAgentReports:         cfg.Tasks.TimeController.MinAgentReports,
+			DefaultMode:             cfg.Tasks.TimeController.DefaultMode,
+			ExternalServers:         cfg.Tasks.TimeController.ExternalServers,
+			ExternalLossTimeout:     cfg.Tasks.TimeController.ExternalLossTimeout,
+			ExternalRecoveryTimeout: cfg.Tasks.TimeController.ExternalRecoveryTimeout,
+			OrphanStratum:           cfg.Tasks.TimeController.OrphanStratum,
+			OperatorRequestKey:      cfg.Tasks.TimeController.OperatorRequestKey,
+			OrderHistoryKeep:        cfg.Consul.OrderHistoryKeep,
+		}, st, locker)
+		go func() {
+			log.Printf("%s time controller started", logPrefix)
+			if err := ctl.Run(ctx); err != nil {
+				log.Printf("%s time controller stopped: %v", logPrefix, err)
 			}
 		}()
 	}
@@ -366,6 +397,28 @@ func main() {
 			log.Printf("%s hmi_agent started", logPrefix)
 			if err := ag.Run(ctx); err != nil {
 				log.Printf("%s hmi_agent stopped: %v", logPrefix, err)
+			}
+		}()
+	}
+	if cfg.Tasks.TimeAgent.Enabled {
+		if cfg.Tasks.TimeAgent.AgentID == "" {
+			cfg.Tasks.TimeAgent.AgentID = nodeName
+		}
+		ag := timeagent.New(timeagent.Config{
+			AgentID:         cfg.Tasks.TimeAgent.AgentID,
+			ReportKey:       cfg.Tasks.TimeAgent.ReportKey,
+			OrdersKey:       cfg.Tasks.TimeAgent.OrdersKey,
+			AckKey:          cfg.Tasks.TimeAgent.AckKey,
+			OrderStorePath:  cfg.Tasks.TimeAgent.OrderStorePath,
+			NtpdBin:         cfg.Tasks.TimeAgent.NtpdBin,
+			NtpdConfigPath:  cfg.Tasks.TimeAgent.NtpdConfigPath,
+			NtpdServiceName: cfg.Tasks.TimeAgent.NtpdServiceName,
+			ReportInterval:  cfg.Tasks.TimeAgent.ReportInterval,
+		}, st)
+		go func() {
+			log.Printf("%s time_agent started", logPrefix)
+			if err := ag.Run(ctx); err != nil {
+				log.Printf("%s time_agent stopped: %v", logPrefix, err)
 			}
 		}()
 	}
