@@ -2,7 +2,7 @@ package timectl
 
 import (
 	"context"
-	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -308,9 +308,7 @@ func selectMaster(reports []timeproto.AgentReport) string {
 		if r.AgentID == "" {
 			continue
 		}
-		if !found || r.MasterCandidateScore > best.MasterCandidateScore ||
-			(r.MasterCandidateScore == best.MasterCandidateScore && r.UpdatedAt.After(best.UpdatedAt)) ||
-			(r.MasterCandidateScore == best.MasterCandidateScore && r.UpdatedAt.Equal(best.UpdatedAt) && r.AgentID < best.AgentID) {
+		if !found || shouldSelectMasterCandidate(r, best) {
 			best = r
 			found = true
 		}
@@ -319,6 +317,16 @@ func selectMaster(reports []timeproto.AgentReport) string {
 		return ""
 	}
 	return best.AgentID
+}
+
+func shouldSelectMasterCandidate(candidate, current timeproto.AgentReport) bool {
+	if candidate.MasterCandidateScore != current.MasterCandidateScore {
+		return candidate.MasterCandidateScore > current.MasterCandidateScore
+	}
+	if !candidate.UpdatedAt.Equal(current.UpdatedAt) {
+		return candidate.UpdatedAt.After(current.UpdatedAt)
+	}
+	return candidate.AgentID < current.AgentID
 }
 
 func sortedAgentIDs(reports []timeproto.AgentReport) []string {
@@ -342,7 +350,7 @@ func hashDecision(mode, manual, master string, peers, externals []string, orphan
 		"orphan":    orphan,
 	}
 	b, _ := json.Marshal(payload)
-	sum := sha1.Sum(b)
+	sum := sha256.Sum256(b)
 	return fmt.Sprintf("%x", sum[:])
 }
 

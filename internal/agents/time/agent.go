@@ -269,9 +269,6 @@ func decodePayload(m map[string]any) (timeproto.OrderPayload, error) {
 	if err := json.Unmarshal(b, &p); err != nil {
 		return timeproto.OrderPayload{}, err
 	}
-	if p.OrderNo == 0 {
-		p.OrderNo = p.OrderNo
-	}
 	return p, nil
 }
 
