@@ -201,8 +201,8 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, instanceToken)
 	checkID := fmt.Sprintf("check:%s", serviceID)
 	handle := &procHandle{
-		cmd:       cmd,
-		logFile:   logFile,
+		cmd: cmd,
+		// logFile:   logFile,
 		serviceID: serviceID,
 		checkID:   checkID,
 		stopCh:    make(chan struct{}),
@@ -210,7 +210,7 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	a.mu.Lock()
 	a.procs[name] = handle
 	a.mu.Unlock()
-	log.Printf("[service-agent] started service=%s role=%s pid=%d log=%s", name, role, pid, logPath)
+	log.Printf("[service-agent] started service=%s role=%s pid=%d", name, role, pid)
 
 	// Register service with TTL note that includes role + pid
 	if a.reg != nil {

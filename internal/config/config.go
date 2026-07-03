@@ -188,16 +188,18 @@ type KafkaAgentConfig struct {
 	ReportKey string   `yaml:"report_key"`
 	MetaDirs  []string `yaml:"meta_dirs"`
 
-	KafkaBinDir    string `yaml:"kafka_bin_dir"`
-	WorkDir        string `yaml:"work_dir"`
+	KafkaBinDir              string `yaml:"kafka_bin_dir"`
+	WorkDir                  string `yaml:"work_dir"`
 	ServerPropertiesTemplate string `yaml:"server_properties_template"`
-	LogDir         string `yaml:"log_dir"`
-	MetaLogDir     string `yaml:"meta_log_dir"`
-	BrokerAddr     string `yaml:"broker_addr"`
-	ControllerAddr string `yaml:"controller_addr"`
-	ClusterID      string `yaml:"cluster_id"`
-	NodeID         string `yaml:"node_id"`
-	StorageID      string `yaml:"storage_id"`
+	ServerPropertiesPath     string `yaml:"server_properties_path"`
+	ServerLogDir             string `yaml:"server_log_dir"`
+	LogDir                   string `yaml:"log_dir"`
+	MetaLogDir               string `yaml:"meta_log_dir"`
+	BrokerAddr               string `yaml:"broker_addr"`
+	ControllerAddr           string `yaml:"controller_addr"`
+	ClusterID                string `yaml:"cluster_id"`
+	NodeID                   string `yaml:"node_id"`
+	StorageID                string `yaml:"storage_id"`
 
 	Service ServiceConfig `yaml:"service"`
 }

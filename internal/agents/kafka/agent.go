@@ -29,11 +29,13 @@ type Config struct {
 	HealthKey string
 	SpecKey   string
 
-	KafkaBinDir string
-	WorkDir     string
+	KafkaBinDir              string
+	WorkDir                  string
 	ServerPropertiesTemplate string
-	LogDir      string
-	MetaLogDir  string
+	ServerPropertiesPath     string
+	ServerLogDir             string
+	LogDir                   string
+	MetaLogDir               string
 
 	BrokerAddr     string
 	ControllerAddr string
@@ -303,9 +305,9 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 		addrs = []string{a.cfg.ControllerAddr}
 	}
 	bootstrap := strings.Join(addrs, ",")
-	propsPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("server-%s.properties", nodeID))
+	propsPath := a.serverPropertiesPath(nodeID)
 	a.cfg.PropsPath = propsPath
-	if err := os.MkdirAll(a.cfg.WorkDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(propsPath), 0o755); err != nil {
 		return err
 	}
 	props, err := a.renderProperties(bootstrap)
@@ -335,7 +337,10 @@ func (a *Agent) startKafka(ctx context.Context, bootstrapControllers []string, m
 	}
 
 	startCmd := filepath.Join(a.cfg.KafkaBinDir, "kafka-server-start.bat")
-	logPath := filepath.Join(a.cfg.WorkDir, fmt.Sprintf("kafka-server-%s.log", nodeID))
+	logPath := a.serverLogPath(nodeID)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
@@ -420,6 +425,29 @@ func (a *Agent) nodeID() string {
 		return "1"
 	}
 	return a.cfg.NodeID
+}
+
+func (a *Agent) serverPropertiesPath(nodeID string) string {
+	if p := strings.TrimSpace(a.cfg.ServerPropertiesPath); p != "" {
+		return p
+	}
+	return filepath.Join(a.kafkaRuntimeDir(), fmt.Sprintf("server-%s.properties", nodeID))
+}
+
+func (a *Agent) serverLogPath(nodeID string) string {
+	baseDir := strings.TrimSpace(a.cfg.ServerLogDir)
+	if baseDir == "" {
+		baseDir = a.kafkaRuntimeDir()
+	}
+	return filepath.Join(baseDir, fmt.Sprintf("kafka-server-%s.log", nodeID))
+}
+
+func (a *Agent) kafkaRuntimeDir() string {
+	agentID := strings.TrimSpace(a.cfg.AgentID)
+	if agentID == "" {
+		agentID = "node"
+	}
+	return filepath.Join(os.TempDir(), "kaptan", "kafka", agentID)
 }
 
 func escapeWindowsPath(p string) string {
