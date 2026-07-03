@@ -180,14 +180,14 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	logPath, logFile, err := openServiceLogFile(workDir, name, role, a.cfg.AgentID)
-	if err != nil {
-		return err
-	}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
+	// logPath, logFile, err := openServiceLogFile(workDir, name, role, a.cfg.AgentID)
+	// if err != nil {
+	// return err
+	// }
+	// cmd.Stdout = logFile
+	// cmd.Stderr = logFile
 	if err := cmd.Start(); err != nil {
-		_ = logFile.Close()
+		// _ = logFile.Close()
 		return err
 	}
 	pid := 0
