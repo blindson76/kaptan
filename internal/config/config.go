@@ -258,6 +258,15 @@ type ServicesAgentConfig struct {
 	AckPrefix    string `yaml:"ack_prefix"`
 
 	ServiceAddress string `yaml:"service_address"` // advertise address for service registration
+
+	// LogDir is the directory where service stdout/stderr log files are written.
+	// When empty, service output is not captured to disk.
+	LogDir string `yaml:"log_dir"`
+
+	// LogAddr is the HTTP listen address for the remote log viewer server (e.g. ":8888").
+	// When set, exposes GET /logs and GET /logs/{service} endpoints.
+	// Requires LogDir to be set.
+	LogAddr string `yaml:"log_addr"`
 }
 
 type HmiRoleDef struct {

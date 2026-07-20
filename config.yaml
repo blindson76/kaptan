@@ -582,3 +582,5 @@ tasks:
     orders_prefix: 'orders/services'
     ack_prefix: 'acks/services'
     service_address: '${env.CSB_IP}'
+    # log_dir: '${env.CMS_ROOT}/logs/services'   # write service stdout/stderr here
+    # log_addr: ':8888'                            # expose remote log viewer on this address

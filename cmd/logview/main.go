@@ -11,7 +11,7 @@ import (
 	"syscall"
 )
 
-const defaultAddr = "127.0.0.1:6644"
+const defaultAddr = "0.0.0.0:6644"
 
 func main() {
 	addr := flag.String("addr", defaultAddr, "udp listen address")

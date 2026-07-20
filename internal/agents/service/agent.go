@@ -24,6 +24,12 @@ type Config struct {
 	OrdersPrefix   string
 	AckPrefix      string
 	ServiceAddress string
+	// LogDir is the directory where service stdout/stderr log files are written.
+	// When empty, service output is not captured to disk.
+	LogDir string
+	// LogAddr is the HTTP listen address for the remote log viewer (e.g. ":8888").
+	// Requires LogDir to be set.
+	LogAddr string
 }
 
 type Agent struct {
@@ -68,6 +74,11 @@ func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	if a.cfg.LogAddr != "" && a.cfg.LogDir != "" {
+		srv := newLogServer(a.cfg.LogDir)
+		srv.start(ctx, a.cfg.LogAddr)
+		log.Printf("[service-agent] log server listening on %s", a.cfg.LogAddr)
+	}
 	// Watch all orders under prefix, filter by TargetID
 	ch := a.kv.WatchPrefixJSON(ctx, a.cfg.OrdersPrefix, func() any { return &[]orders.Order{} })
 	for {
@@ -180,14 +191,21 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	// logPath, logFile, err := openServiceLogFile(workDir, name, role, a.cfg.AgentID)
-	// if err != nil {
-	// return err
-	// }
-	// cmd.Stdout = logFile
-	// cmd.Stderr = logFile
+	var logFile *os.File
+	if a.cfg.LogDir != "" {
+		_, lf, err := openServiceLogFile(a.cfg.LogDir, name, role, a.cfg.AgentID)
+		if err != nil {
+			log.Printf("[service-agent] log file open error service=%s: %v", name, err)
+		} else {
+			logFile = lf
+			cmd.Stdout = logFile
+			cmd.Stderr = logFile
+		}
+	}
 	if err := cmd.Start(); err != nil {
-		// _ = logFile.Close()
+		if logFile != nil {
+			_ = logFile.Close()
+		}
 		return err
 	}
 	pid := 0
@@ -201,8 +219,8 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	serviceID := serviceInstanceID(name, role, a.cfg.AgentID, instanceToken)
 	checkID := fmt.Sprintf("check:%s", serviceID)
 	handle := &procHandle{
-		cmd: cmd,
-		// logFile:   logFile,
+		cmd:       cmd,
+		logFile:   logFile,
 		serviceID: serviceID,
 		checkID:   checkID,
 		stopCh:    make(chan struct{}),

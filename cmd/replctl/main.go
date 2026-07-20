@@ -322,6 +322,8 @@ func main() {
 			OrdersPrefix:   cfg.Tasks.ServicesAgent.OrdersPrefix,
 			AckPrefix:      cfg.Tasks.ServicesAgent.AckPrefix,
 			ServiceAddress: svcAddr,
+			LogDir:         cfg.Tasks.ServicesAgent.LogDir,
+			LogAddr:        cfg.Tasks.ServicesAgent.LogAddr,
 		}, st, reg)
 		go func() {
 			log.Printf("%s services_agent started", logPrefix)
