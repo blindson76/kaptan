@@ -39,7 +39,7 @@ func TestLogServerList_WithFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(subDir, "svc-master.log"), "line1\nline2\n")
-	writeFile(t, filepath.Join(subDir, "svc-slave.log"), "line3\n")
+	writeFile(t, filepath.Join(subDir, "svc-replica.log"), "line3\n")
 	writeFile(t, filepath.Join(subDir, "not-a-log.txt"), "ignore me")
 
 	srv := newLogServer(dir)
@@ -57,7 +57,12 @@ func TestLogServerList_WithFiles(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d: %v", len(entries), entries)
 	}
+	// Service identifier must include the subdirectory so files from different
+	// agent nodes remain distinct (e.g. "node-1/svc-master").
 	for _, e := range entries {
+		if !strings.Contains(e.Service, "node-1/") {
+			t.Errorf("service identifier missing node prefix, got: %q", e.Service)
+		}
 		if !strings.HasSuffix(e.File, ".log") {
 			t.Fatalf("unexpected non-log entry: %v", e)
 		}
@@ -99,7 +104,8 @@ func TestLogServerView_TailDefault(t *testing.T) {
 	writeFile(t, filepath.Join(subDir, "mysvc-master.log"), "alpha\nbeta\ngamma\n")
 
 	srv := newLogServer(dir)
-	req := httptest.NewRequest(http.MethodGet, "/logs/mysvc", nil)
+	// Use the full relative path (as returned by GET /logs) for an exact lookup.
+	req := httptest.NewRequest(http.MethodGet, "/logs/node-1/mysvc-master", nil)
 	rr := httptest.NewRecorder()
 	srv.handleView(rr, req)
 
@@ -111,6 +117,25 @@ func TestLogServerView_TailDefault(t *testing.T) {
 		if !strings.Contains(body, line) {
 			t.Errorf("expected %q in body, got: %q", line, body)
 		}
+	}
+}
+
+func TestLogServerView_TailDefault_BaseNameFallback(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "mysvc-master.log"), "hello\nworld\n")
+
+	srv := newLogServer(dir)
+	// Bare service name falls back to prefix search.
+	req := httptest.NewRequest(http.MethodGet, "/logs/mysvc", nil)
+	rr := httptest.NewRecorder()
+	srv.handleView(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "hello") {
+		t.Errorf("expected 'hello' in body, got: %q", body)
 	}
 }
 
@@ -146,20 +171,23 @@ func TestLogServerView_TailLines(t *testing.T) {
 
 func TestLogServerView_PathTraversal(t *testing.T) {
 	dir := t.TempDir()
-	// Create a log file outside the logDir to ensure we cannot access it
+	// Create a log file outside the logDir to ensure we cannot access it.
 	outside := t.TempDir()
 	writeFile(t, filepath.Join(outside, "secret.log"), "secret content")
 
 	srv := newLogServer(dir)
+	// Attempt to escape logDir using path traversal.
 	req := httptest.NewRequest(http.MethodGet, "/logs/../../secret", nil)
 	rr := httptest.NewRecorder()
 	srv.handleView(rr, req)
 
-	// Should either 404 (file not in logDir) or 400 (bad name)
-	if rr.Code == http.StatusOK {
-		if strings.Contains(rr.Body.String(), "secret content") {
-			t.Fatal("path traversal succeeded — security issue")
-		}
+	// Must not return 200 with the secret content.
+	if rr.Code == http.StatusOK && strings.Contains(rr.Body.String(), "secret content") {
+		t.Fatal("path traversal succeeded — security issue")
+	}
+	// Should be either 400 (invalid path) or 404 (not found in logDir).
+	if rr.Code != http.StatusBadRequest && rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 400 or 404 for traversal attempt, got %d", rr.Code)
 	}
 }
 

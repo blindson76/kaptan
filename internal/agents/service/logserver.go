@@ -61,9 +61,11 @@ func (s *logServer) handleList(w http.ResponseWriter, _ *http.Request) {
 			return nil
 		}
 		rel, _ := filepath.Rel(s.logDir, path)
+		// Use the full relative path (without extension) as the service identifier
+		// so that files from different agent nodes remain distinct.
 		entries = append(entries, logFileEntry{
-			Service:    strings.TrimSuffix(info.Name(), ".log"),
-			File:       rel,
+			Service:    strings.TrimSuffix(filepath.ToSlash(rel), ".log"),
+			File:       filepath.ToSlash(rel),
 			Size:       info.Size(),
 			ModifiedAt: info.ModTime(),
 		})
@@ -78,18 +80,22 @@ func (s *logServer) handleList(w http.ResponseWriter, _ *http.Request) {
 
 // handleView serves the log file for a service.
 // URL: GET /logs/{service}[?lines=N][&follow=true]
-// - lines: number of tail lines to return (default 200)
-// - follow: if "true", streams new content as it arrives (like tail -f)
+//   - service: relative path (without .log) as returned by GET /logs, e.g. "node-1/svc-master"
+//     or just the service base name "svc" (returns the most recently modified match)
+//   - lines: number of tail lines to return (default 200)
+//   - follow: if "true", streams new content as it arrives (like tail -f)
 func (s *logServer) handleView(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/logs/")
-	// Guard against path traversal
-	name = filepath.Base(name)
-	if name == "" || name == "." {
+	if name == "" {
 		http.Error(w, "service name required", http.StatusBadRequest)
 		return
 	}
 
-	logPath := s.findLogFile(name)
+	logPath, ok := s.resolveLogPath(name)
+	if !ok {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
 	if logPath == "" {
 		http.Error(w, "log file not found", http.StatusNotFound)
 		return
@@ -110,17 +116,58 @@ func (s *logServer) handleView(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// findLogFile looks for a log file whose base name equals name or starts with name+"-".
-// It searches all subdirectories of logDir and returns the first match.
-func (s *logServer) findLogFile(name string) string {
-	var found string
+// resolveLogPath maps a client-supplied name to an absolute path within logDir.
+// It returns ("", false) when the name contains a path-traversal attempt.
+// It returns ("", true) when no matching file is found.
+// The name may be:
+//   - a full relative path without extension, e.g. "node-1/svc-master"
+//   - a bare service base name, e.g. "svc" (matches the most recently modified file
+//     whose base name equals "svc" or starts with "svc-")
+func (s *logServer) resolveLogPath(name string) (string, bool) {
+	absLogDir, err := filepath.Abs(s.logDir)
+	if err != nil {
+		return "", false
+	}
+	// Normalise the separator so that URL slashes work on all platforms.
+	name = filepath.FromSlash(name)
+
+	// Attempt exact match: treat name as a relative path to a .log file.
+	candidate := filepath.Clean(filepath.Join(absLogDir, name+".log"))
+	if !strings.HasPrefix(candidate, absLogDir+string(filepath.Separator)) {
+		return "", false // path traversal attempt
+	}
+	if _, statErr := os.Stat(candidate); statErr == nil {
+		return candidate, true
+	}
+
+	// Fall back: search by base name only (ignore any directory prefix the
+	// client supplied and match against the file's own base name).
+	base := filepath.Base(name)
+	found := s.findLogFileByBase(base)
+	return found, true
+}
+
+// findLogFileByBase looks for a log file whose base name (without the .log
+// suffix) equals baseName or starts with baseName+"-".  When multiple files
+// match (e.g. svc-master.log and svc-slave.log for baseName "svc"), the most
+// recently modified one is returned so that the active instance is preferred.
+func (s *logServer) findLogFileByBase(baseName string) string {
+	var (
+		found    string
+		foundMod time.Time
+	)
 	_ = filepath.Walk(s.logDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || found != "" {
+		if err != nil || info.IsDir() {
 			return nil
 		}
 		base := strings.TrimSuffix(info.Name(), ".log")
-		if base == name || strings.HasPrefix(base, name+"-") {
+		if base != baseName && !strings.HasPrefix(base, baseName+"-") {
+			return nil
+		}
+		// Prefer exact match; among equal specificity prefer most-recently modified.
+		if found == "" || info.ModTime().After(foundMod) {
 			found = path
+			foundMod = info.ModTime()
 		}
 		return nil
 	})
@@ -205,6 +252,9 @@ func tailFile(f *os.File, n int) ([]byte, error) {
 	}
 
 	// Read at most 4 MiB from the end to find the last n lines.
+	// If the last n lines exceed 4 MiB the output will be truncated to whatever
+	// content fits within that window; the 4 MiB cap keeps memory bounded for
+	// very large or noisy log files.
 	const maxRead = 4 * 1024 * 1024
 	readSize := int64(maxRead)
 	if readSize > size {
