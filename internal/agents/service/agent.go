@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/orders"
 	"github.com/umitbozkurt/consul-replctl/internal/servicereg"
 	"github.com/umitbozkurt/consul-replctl/internal/store"
@@ -20,6 +22,11 @@ type Config struct {
 	OrdersPrefix   string
 	AckPrefix      string
 	ServiceAddress string
+
+	// LogAddr is the remote UDP log collector address (see cmd/logview)
+	// that managed services' stdout/stderr are shipped to, in addition
+	// to this process's own console. Empty falls back to logging.DefaultAddr.
+	LogAddr string
 }
 
 type Agent struct {
@@ -113,8 +120,9 @@ func (a *Agent) startService(ctx context.Context, name, role, cmdStr string, arg
 	if workDir != "" {
 		cmd.Dir = workDir
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	tag := fmt.Sprintf("service=%s role=%s", name, role)
+	cmd.Stdout = io.MultiWriter(os.Stdout, logging.NewWriter(a.cfg.AgentID, a.cfg.LogAddr, tag+" stream=stdout"))
+	cmd.Stderr = io.MultiWriter(os.Stderr, logging.NewWriter(a.cfg.AgentID, a.cfg.LogAddr, tag+" stream=stderr"))
 	if err := cmd.Start(); err != nil {
 		return err
 	}

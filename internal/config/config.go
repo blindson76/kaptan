@@ -14,8 +14,17 @@ import (
 type Config struct {
 	NodeName string `yaml:"node_name"`
 
-	Consul ConsulConfig `yaml:"consul"`
-	Tasks  TasksConfig  `yaml:"tasks"`
+	Logging LoggingConfig `yaml:"logging"`
+	Consul  ConsulConfig  `yaml:"consul"`
+	Tasks   TasksConfig   `yaml:"tasks"`
+}
+
+type LoggingConfig struct {
+	// Address of a remote UDP log collector (see cmd/logview), e.g.
+	// "10.0.0.5:6644". The daemon's own logs and every managed service's
+	// stdout/stderr are shipped here. Empty falls back to
+	// logging.DefaultAddr (localhost only).
+	Address string `yaml:"address"`
 }
 
 type ConsulConfig struct {

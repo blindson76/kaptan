@@ -1,5 +1,11 @@
 node_name: '${env.NODE_NAME}'
 
+logging:
+  # Remote UDP log collector (run `cmd/logview -addr :6644` there).
+  # Carries both this daemon's own logs and every managed service's
+  # stdout/stderr. Leave empty to fall back to 127.0.0.1:6644 (local-only).
+  address: '${env.LOG_ADDR}'
+
 consul:
   address: '${env.CONSUL_HTTP_ADDR}'
   datacenter: ''

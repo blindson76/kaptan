@@ -43,12 +43,12 @@ func main() {
 	if nodeName == "" {
 		nodeName, _ = os.Hostname()
 	}
-	logging.Setup(nodeName)
+	logging.Setup(nodeName, cfg.Logging.Address)
 
 	ctx, cancel := runtime.WithSignals(context.Background())
 	defer cancel()
 
-	st, err := consul.New(cfg.Consul.Address, cfg.Consul.Datacenter, cfg.Consul.Token, cfg.Consul.Prefix, nodeName)
+	st, err := consul.New(cfg.Consul.Address, cfg.Consul.Datacenter, cfg.Consul.Token, cfg.Consul.Prefix)
 	if err != nil {
 		log.Fatalf("consul init error: %v", err)
 	}
@@ -299,6 +299,7 @@ func main() {
 			OrdersPrefix:   cfg.Tasks.ServicesAgent.OrdersPrefix,
 			AckPrefix:      cfg.Tasks.ServicesAgent.AckPrefix,
 			ServiceAddress: svcAddr,
+			LogAddr:        cfg.Logging.Address,
 		}, st, reg)
 		go func() {
 			log.Printf("%s services_agent started", logPrefix)

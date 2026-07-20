@@ -59,3 +59,8 @@ Mongo agent TTL check note: startup/primary/secondary. Kafka agent TTL check not
 - Each service gets 2 instances (`master` and `slave`) placed on different nodes (best-effort).
 - Enable `tasks.services_agent` on every node to execute start orders.
 - Services controller waits for `wait_for` dependencies (e.g. mongo+kafka) to have at least `min_passing` passing Consul health checks before starting services.
+
+## Remote logging
+- Set `logging.address` to the `host:port` of a central log collector (run `./logview -addr :6644` there). Leave empty/unset to keep logging local-only (falls back to `127.0.0.1:6644`).
+- Both the daemon's own logs and every service started by `services_agent` (its stdout/stderr) are shipped there over UDP, tagged with `node`, `service`, `role`, and `stream`.
+- Build the collector with `go build ./cmd/logview` and run it on the log-collector host with `-addr :6644` (or whatever port `logging.address` points at) so it accepts traffic from other nodes, not just localhost.
