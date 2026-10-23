@@ -21,6 +21,7 @@ tasks:
     election_interval: '10s'
     initial_settle_duration: '3s'   # debounce window before choosing initial 3 members
     allow_degraded_single_member: false
+    max_oplog_lag: '1h'             # candidates whose oplog trails the newest by more are selected last and wiped
 
   mongo_agent:
     enabled: false
