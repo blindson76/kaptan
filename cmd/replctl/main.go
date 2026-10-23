@@ -108,6 +108,7 @@ func main() {
 			SpecKey:                   cfg.Tasks.MongoController.SpecKey,
 			ReplicaSetID:              cfg.Tasks.MongoController.ReplicaSetID,
 			ElectionInterval:          cfg.Tasks.MongoController.ElectionInterval,
+			MaxOplogLag:               cfg.Tasks.MongoController.MaxOplogLag,
 			InitialSettleDuration:     cfg.Tasks.MongoController.InitialSettleDuration,
 			AllowDegradedSingleMember: cfg.Tasks.MongoController.AllowDegradedSingleMember,
 		}, st, locker, consulorders.MongoAdapter{P: orderProv})
