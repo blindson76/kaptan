@@ -641,9 +641,29 @@ func (c *Controller) healthMap(now time.Time) map[string]healthState {
 		if strings.Contains(reason, "exit") || strings.Contains(reason, "exited") || strings.Contains(reason, "terminated") || strings.Contains(reason, "shutdown") {
 			state.fatal = true
 		}
+		// Member stuck in RECOVERING/STARTUP beyond the agent threshold must not block election or dependents
+		if isMongoStuck(s.Reason) {
+			state.healthy = false
+			state.fatal = true
+		}
 		h[s.ID] = state
 	}
 	return h
+}
+
+func isMongoStuck(reason string) bool {
+	if reason == "" {
+		return false
+	}
+	var note struct {
+		Mongo struct {
+			Stuck bool `json:"stuck"`
+		} `json:"mongo"`
+	}
+	if err := json.Unmarshal([]byte(reason), &note); err != nil {
+		return false
+	}
+	return note.Mongo.Stuck
 }
 
 type healthState struct {

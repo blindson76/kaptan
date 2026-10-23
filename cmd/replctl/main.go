@@ -15,10 +15,10 @@ import (
 	mongoagent "github.com/umitbozkurt/consul-replctl/internal/agents/mongo"
 	serviceagent "github.com/umitbozkurt/consul-replctl/internal/agents/service"
 	"github.com/umitbozkurt/consul-replctl/internal/config"
-	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/controllers/kafka"
 	mctl "github.com/umitbozkurt/consul-replctl/internal/controllers/mongo"
 	sctl "github.com/umitbozkurt/consul-replctl/internal/controllers/services"
+	"github.com/umitbozkurt/consul-replctl/internal/logging"
 	"github.com/umitbozkurt/consul-replctl/internal/providers/consulorders"
 	"github.com/umitbozkurt/consul-replctl/internal/runtime"
 	"github.com/umitbozkurt/consul-replctl/internal/servicereg"
@@ -178,22 +178,23 @@ func main() {
 			runOnce(ctx, "mongo-worker", func() error { return w.RunOnce(ctx) })
 		}
 		ag := mongoagent.New(mongoagent.Config{
-			AgentID:     cfg.Tasks.MongoAgent.AgentID,
-			OrdersKey:   cfg.Tasks.MongoAgent.OrdersKey,
-			AckKey:      cfg.Tasks.MongoAgent.AckKey,
-			MongodPath:  cfg.Tasks.MongoAgent.MongodPath,
-			DBPath:      cfg.Tasks.MongoAgent.DBPath,
-			BindIP:      cfg.Tasks.MongoAgent.BindIP,
-			BindAddr:    cfg.Tasks.MongoAgent.BindAddr,
-			Port:        cfg.Tasks.MongoAgent.Port,
-			TempPort:    cfg.Tasks.MongoAgent.TempPort,
-			ReplSetName: cfg.Tasks.MongoAgent.ReplSetName,
-			LogPath:     cfg.Tasks.MongoAgent.LogPath,
-			AdminUser:   cfg.Tasks.MongoAgent.AdminUser,
-			AdminPass:   cfg.Tasks.MongoAgent.AdminPass,
-			HealthKey:   cfg.Tasks.MongoAgent.HealthKey,
-			SpecKey:     cfg.Tasks.MongoAgent.SpecKey,
-			Service:     svc,
+			AgentID:           cfg.Tasks.MongoAgent.AgentID,
+			OrdersKey:         cfg.Tasks.MongoAgent.OrdersKey,
+			AckKey:            cfg.Tasks.MongoAgent.AckKey,
+			MongodPath:        cfg.Tasks.MongoAgent.MongodPath,
+			DBPath:            cfg.Tasks.MongoAgent.DBPath,
+			BindIP:            cfg.Tasks.MongoAgent.BindIP,
+			BindAddr:          cfg.Tasks.MongoAgent.BindAddr,
+			Port:              cfg.Tasks.MongoAgent.Port,
+			TempPort:          cfg.Tasks.MongoAgent.TempPort,
+			ReplSetName:       cfg.Tasks.MongoAgent.ReplSetName,
+			LogPath:           cfg.Tasks.MongoAgent.LogPath,
+			AdminUser:         cfg.Tasks.MongoAgent.AdminUser,
+			AdminPass:         cfg.Tasks.MongoAgent.AdminPass,
+			HealthKey:         cfg.Tasks.MongoAgent.HealthKey,
+			SpecKey:           cfg.Tasks.MongoAgent.SpecKey,
+			RecoveringTimeout: cfg.Tasks.MongoAgent.RecoveringTimeout,
+			Service:           svc,
 		}, st, reg)
 		go func() {
 			log.Printf("%s mongo_agent started", logPrefix)

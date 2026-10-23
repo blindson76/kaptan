@@ -40,6 +40,7 @@ tasks:
     admin_pass: '123'
     port: 27017
     replset_name: 'rs0'
+    recovering_timeout: 60s
     log_path: '${env.MONGO_LOG_PATH}'
     service:
       enabled: true

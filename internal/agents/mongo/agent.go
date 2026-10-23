@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -45,6 +46,9 @@ type Config struct {
 	AdminUser string
 	AdminPass string
 
+	// RecoveringTimeout is how long a member may stay in RECOVERING/STARTUP/STARTUP2 before being considered stuck.
+	RecoveringTimeout time.Duration
+
 	Service servicereg.Registration
 }
 
@@ -62,6 +66,9 @@ type Agent struct {
 	mongodCmd          *exec.Cmd
 	mongodExpectedExit bool
 	mongodKeyFilePath  string
+
+	runCtx     context.Context
+	restarting atomic.Bool
 }
 
 func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
@@ -69,6 +76,7 @@ func New(cfg Config, kv store.KV, reg servicereg.Registry) *Agent {
 }
 
 func (a *Agent) Run(ctx context.Context) error {
+	a.runCtx = ctx
 	log.Printf("[mongo-agent] starting agent_id=%s orders_key=%s ack_key=%s bind=%s port=%d dbpath=%s",
 		a.cfg.AgentID, a.cfg.OrdersKey, a.cfg.AckKey, nz(a.cfg.BindIP, "0.0.0.0"), nzInt(a.cfg.Port, 27017), a.cfg.DBPath)
 	if a.reg != nil && a.cfg.Service.ID != "" {
@@ -609,6 +617,12 @@ func (a *Agent) roleHeartbeat(ctx context.Context) {
 	log.Printf("[mongo-agent] starting role heartbeat for service check_id=%s", a.activeService.CheckID)
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	threshold := a.cfg.RecoveringTimeout
+	if threshold <= 0 {
+		threshold = defaultRecoveringTimeout
+	}
+	var tracker stuckTracker
+	var rem remediation
 	for {
 		select {
 		case <-ctx.Done():
@@ -618,14 +632,33 @@ func (a *Agent) roleHeartbeat(ctx context.Context) {
 				continue
 			}
 			state, stateStr, rsid, optime, term, syncSource, ok, prog := a.probeReplStatus(ctx)
+			elapsed := tracker.observe(state, ok, time.Now())
+			stuck := isStuck(elapsed, threshold)
+			if stuck && !a.restarting.Load() {
+				if act := rem.next(true, threshold, time.Now()); act != actionNone {
+					if act == actionRestart {
+						a.restarting.Store(true)
+					}
+					a.remediateStuck(ctx, act, elapsed)
+				}
+			} else if !stuck {
+				rem.next(false, threshold, time.Now())
+			}
 			note := a.buildServiceNote(state, stateStr, rsid, optime, term, syncSource, prog)
+			if stuck {
+				note = withStuck(note, elapsed)
+			}
 
 			// Map to Consul TTL status
 			switch state {
 			case 1, 2, 7: // PRIMARY, SECONDARY, ARBITER
 				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusPassing, note)
 			case 5, 3, 0: // STARTUP2, RECOVERING, STARTUP
-				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
+				if stuck {
+					_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusCritical, note)
+				} else {
+					_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusWarning, note)
+				}
 			case 9, 8, 6, 10: // ROLLBACK, DOWN, UNKNOWN, REMOVED
 				_ = a.reg.SetTTL(ctx, a.activeService.CheckID, servicereg.StatusCritical, note)
 			default:
