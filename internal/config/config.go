@@ -50,7 +50,6 @@ type MongoControllerConfig struct {
 	ElectionInterval          time.Duration `yaml:"election_interval"`
 	InitialSettleDuration     time.Duration `yaml:"initial_settle_duration"`
 	AllowDegradedSingleMember bool          `yaml:"allow_degraded_single_member"`
-	MaxOplogLag               time.Duration `yaml:"max_oplog_lag"`
 }
 
 type KafkaControllerConfig struct {

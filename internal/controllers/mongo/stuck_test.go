@@ -21,21 +21,28 @@ func TestIsMongoStuck(t *testing.T) {
 
 func TestOplogStaleOrderingAndWipe(t *testing.T) {
 	now := time.Now()
-	c := New(Config{MaxOplogLag: time.Hour}, nil, nil, nil)
+	c := New(Config{}, nil, nil, nil)
 	c.candidates = []types.CandidateReport{
-		{ID: "old", Eligible: true, LastOplogTs: now.Add(-5 * time.Hour)},
-		{ID: "new", Eligible: true, LastOplogTs: now},
-		{ID: "mid", Eligible: true, LastOplogTs: now.Add(-10 * time.Minute)},
+		{ID: "old", Eligible: true, LastOplogTs: now.Add(-5 * time.Hour), FirstOplogTs: now.Add(-9 * time.Hour)},
+		{ID: "new", Eligible: true, LastOplogTs: now, FirstOplogTs: now.Add(-2 * time.Hour)},
+		{ID: "mid", Eligible: true, LastOplogTs: now.Add(-90 * time.Minute), FirstOplogTs: now.Add(-3 * time.Hour)},
+		{ID: "empty", Eligible: true},
 	}
 	el := c.eligibleCandidates()
-	if el[0].ID != "new" || el[1].ID != "mid" || el[2].ID != "old" {
+	if el[0].ID != "new" || el[1].ID != "mid" || el[len(el)-1].ID != "old" {
 		t.Fatalf("order: %v", el)
 	}
-	newest := c.newestOplog(el)
-	if c.shouldWipe(el[1], "", newest) {
-		t.Fatal("mid should not be wiped")
+	ws := c.oplogWindowStart(el)
+	if !ws.Equal(now.Add(-2 * time.Hour)) {
+		t.Fatalf("window start %v", ws)
 	}
-	if !c.shouldWipe(el[2], "", newest) {
+	if c.shouldWipe(el[1], "", ws) {
+		t.Fatal("mid is inside the window, no wipe")
+	}
+	if c.shouldWipe(types.CandidateReport{ID: "empty"}, "", ws) {
+		t.Fatal("empty oplog is not stale")
+	}
+	if !c.shouldWipe(types.CandidateReport{ID: "old", LastOplogTs: now.Add(-5 * time.Hour)}, "", ws) {
 		t.Fatal("old should be wiped")
 	}
 }

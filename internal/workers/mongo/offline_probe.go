@@ -36,9 +36,9 @@ type OfflineProbeConfig struct {
 // This is intentionally conservative:
 // - It binds only to 127.0.0.1
 // - It uses a short timeout
-func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replSetUUID string, term int64, lastOplog time.Time, err error) {
+func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replSetUUID string, term int64, lastOplog time.Time, firstOplog time.Time, err error) {
 	if cfg.MongodPath == "" || cfg.DBPath == "" || cfg.Port == 0 {
-		return "", "", 0, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
+		return "", "", 0, time.Time{}, time.Time{}, errors.New("mongod_path, dbpath, temp_port required")
 	}
 
 	bind := cfg.Bind
@@ -47,7 +47,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	}
 
 	if err := waitPortFree(bind, cfg.Port); err != nil {
-		return "", "", 0, time.Time{}, fmt.Errorf("temp port not free: %w", err)
+		return "", "", 0, time.Time{}, time.Time{}, fmt.Errorf("temp port not free: %w", err)
 	}
 
 	// Start mongod
@@ -63,7 +63,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	stderr, _ := cmd.StderrPipe()
 
 	if err := cmd.Start(); err != nil {
-		return "", "", 0, time.Time{}, err
+		return "", "", 0, time.Time{}, time.Time{}, err
 	}
 	done := make(chan struct{})
 	go func() {
@@ -86,7 +86,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	cli, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
 	if err != nil {
 		_ = stopProcess(cmd, done)
-		return "", "", 0, time.Time{}, err
+		return "", "", 0, time.Time{}, time.Time{}, err
 	}
 	defer func() { _ = cli.Disconnect(context.Background()) }()
 
@@ -99,7 +99,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 		}
 		if pingCtx.Err() != nil {
 			_ = stopProcess(cmd, done)
-			return "", "", 0, time.Time{}, fmt.Errorf("mongod not ready: %w", pingCtx.Err())
+			return "", "", 0, time.Time{}, time.Time{}, fmt.Errorf("mongod not ready: %w", pingCtx.Err())
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
@@ -135,6 +135,19 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 		}
 	}
 
+	// read first (oldest) oplog entry: start of the oplog window
+	cur1, err3 := localDB.Collection("oplog.rs").Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}).SetLimit(1))
+	if err3 == nil {
+		defer cur1.Close(ctx)
+		if cur1.Next(ctx) {
+			var doc bson.M
+			_ = cur1.Decode(&doc)
+			if ts, ok := doc["ts"].(primitive.Timestamp); ok {
+				firstOplog = time.Unix(int64(ts.T), 0)
+			}
+		}
+	}
+
 	// ensure admin user exists (best-effort)
 	if cfg.AdminUser != "" && cfg.AdminPass != "" {
 		ensureAdminUser(ctx, cli, cfg.AdminUser, cfg.AdminPass)
@@ -144,7 +157,7 @@ func Probe(ctx context.Context, cfg OfflineProbeConfig) (replSetID string, replS
 	//_, _ = localDB.Collection("system.replset").DeleteMany(ctx, bson.D{})
 
 	_ = stopProcess(cmd, done)
-	return replSetID, replSetUUID, term, lastOplog, nil
+	return replSetID, replSetUUID, term, lastOplog, firstOplog, nil
 }
 
 func ensureAdminUser(ctx context.Context, cli *mongo.Client, user, pass string) {

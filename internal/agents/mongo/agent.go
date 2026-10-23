@@ -202,7 +202,7 @@ func (a *Agent) recreateAdminUser(ctx context.Context) error {
 	log.Printf("[mongo-agent] recreating admin user after wipe (bind=%s port=%d)", bind, port)
 	probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	_, _, _, _, err := mw.Probe(probeCtx, mw.OfflineProbeConfig{
+	_, _, _, _, _, err := mw.Probe(probeCtx, mw.OfflineProbeConfig{
 		MongodPath: a.cfg.MongodPath,
 		DBPath:     a.cfg.DBPath,
 		Bind:       bind,
