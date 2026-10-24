@@ -35,7 +35,7 @@ func New(cfg Config, kv store.KV) *Worker {
 
 func (w *Worker) RunOnce(ctx context.Context) error {
 	log.Printf("[mongo-worker] offline status probe starting")
-	rsid, rsuuid, term, ts, err := Probe(ctx, OfflineProbeConfig{
+	rsid, rsuuid, term, ts, firstTs, err := Probe(ctx, OfflineProbeConfig{
 		MongodPath: w.cfg.MongodPath,
 		DBPath:     w.cfg.DBPath,
 		Bind:       w.cfg.BindAddr,
@@ -60,6 +60,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 		LastSeenReplicaSetUUID: rsuuid,
 		LastTerm:               term,
 		LastOplogTs:            ts,
+		FirstOplogTs:           firstTs,
 		Eligible:               err == nil,
 		Reason: func() string {
 			if err == nil {

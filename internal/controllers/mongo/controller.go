@@ -72,6 +72,9 @@ type Controller struct {
 	initialDeadline time.Time
 	waitHealthSince time.Time
 	waitHealthSpecVersion int64
+
+	// members that were stuck in RECOVERING; their data is wiped on next selection
+	recoveryWipe map[string]bool
 }
 
 func New(cfg Config, kv store.KV, locker interface {
@@ -83,7 +86,7 @@ func New(cfg Config, kv store.KV, locker interface {
 	if cfg.InitialSettleDuration == 0 {
 		cfg.InitialSettleDuration = 15 * time.Second
 	}
-	return &Controller{cfg: cfg, kv: kv, locker: locker, provider: provider}
+	return &Controller{cfg: cfg, kv: kv, locker: locker, provider: provider, recoveryWipe: map[string]bool{}}
 }
 
 func (c *Controller) Run(ctx context.Context) error {
@@ -332,7 +335,13 @@ func (c *Controller) eligibleCandidates() []types.CandidateReport {
 			out = append(out, r)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
+	windowStart := c.oplogWindowStart(out)
+	sort.SliceStable(out, func(i, j int) bool {
+		// Members whose oplog is too old would go RECOVERING; select them last.
+		si, sj := c.oplogTooStale(out[i], windowStart), c.oplogTooStale(out[j], windowStart)
+		if si != sj {
+			return !si
+		}
 		// Prefer newest (term, oplog timestamp) a.k.a. optime, fallback to report UpdatedAt
 		// This better matches "most recent" in Mongo terms.
 		if out[i].LastTerm != 0 || out[j].LastTerm != 0 {
@@ -351,6 +360,37 @@ func (c *Controller) eligibleCandidates() []types.CandidateReport {
 		return out[i].UpdatedAt.After(out[j].UpdatedAt)
 	})
 	return out
+}
+
+// oplogTooStale reports whether the candidate cannot catch up from the reference member's oplog:
+// its last oplog entry is older than the start of the reference oplog window (deterministic, no tunables).
+func (c *Controller) oplogTooStale(cr types.CandidateReport, windowStart time.Time) bool {
+	return isOplogTooStale(cr.LastOplogTs, windowStart)
+}
+
+func isOplogTooStale(last, windowStart time.Time) bool {
+	if last.IsZero() || windowStart.IsZero() {
+		return false
+	}
+	return last.Before(windowStart)
+}
+
+// oplogWindowStart returns the oldest oplog entry of the reference candidate, i.e. the one with the
+// newest (term, last oplog ts); ties are broken by ID for determinism. Zero if unknown.
+func (c *Controller) oplogWindowStart(eligible []types.CandidateReport) time.Time {
+	var ref *types.CandidateReport
+	for i := range eligible {
+		r := &eligible[i]
+		if ref == nil || r.LastTerm > ref.LastTerm ||
+			(r.LastTerm == ref.LastTerm && (r.LastOplogTs.After(ref.LastOplogTs) ||
+				(r.LastOplogTs.Equal(ref.LastOplogTs) && r.ID < ref.ID))) {
+			ref = r
+		}
+	}
+	if ref == nil {
+		return time.Time{}
+	}
+	return ref.FirstOplogTs
 }
 
 func (c *Controller) hasEnoughEligible(n int) bool {
@@ -379,6 +419,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 		want = len(eligible)
 	}
 	desiredUUID := c.desiredReplicaSetUUID(eligible)
+	newest := c.oplogWindowStart(eligible)
 	members := make([]string, 0, want)
 	for i := 0; i < want; i++ {
 		members = append(members, eligible[i].ID)
@@ -388,7 +429,7 @@ func (c *Controller) publishSpec(ctx context.Context, want int) {
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
-				if c.shouldWipe(cr, desiredUUID) {
+				if c.shouldWipe(cr, desiredUUID, newest) {
 					wipe[id] = true
 				}
 			}
@@ -557,6 +598,7 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	if failedIdx < 0 {
 		return false
 	}
+	c.markStuckForWipe(c.spec.Members[failedIdx])
 
 	eligible := c.eligibleCandidates()
 	specSet := map[string]bool{}
@@ -580,11 +622,12 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 
 	c.specVersion++
 	desiredUUID := c.desiredReplicaSetUUID(eligible)
+	newest := c.oplogWindowStart(eligible)
 	wipe := map[string]bool{}
 	for _, id := range members {
 		for _, cr := range eligible {
 			if cr.ID == id {
-				if c.shouldWipe(cr, desiredUUID) {
+				if c.shouldWipe(cr, desiredUUID, newest) {
 					wipe[id] = true
 				}
 			}
@@ -609,7 +652,28 @@ func (c *Controller) replaceOnce(ctx context.Context) bool {
 	return true
 }
 
-func (c *Controller) shouldWipe(cr types.CandidateReport, desiredUUID string) bool {
+// markStuckForWipe schedules a data wipe for a member that is stuck in RECOVERING so it becomes eligible again.
+func (c *Controller) markStuckForWipe(id string) {
+	for _, hs := range c.health {
+		if hs.ID == id && isMongoStuck(hs.Reason) {
+			c.recoveryWipe[id] = true
+			log.Printf("[mongo] member %s stuck in RECOVERING, scheduling data wipe", id)
+			return
+		}
+	}
+}
+
+func (c *Controller) shouldWipe(cr types.CandidateReport, desiredUUID string, windowStart time.Time) bool {
+	if c.recoveryWipe[cr.ID] {
+		log.Printf("[mongo] member %s previously stuck in RECOVERING, wiping data", cr.ID)
+		delete(c.recoveryWipe, cr.ID)
+		return true
+	}
+	if c.oplogTooStale(cr, windowStart) {
+		log.Printf("[mongo] member %s last oplog %s is older than reference oplog window start %s, wiping data to avoid RECOVERING",
+			cr.ID, cr.LastOplogTs.Format(time.RFC3339), windowStart.Format(time.RFC3339))
+		return true
+	}
 	if c.cfg.ReplicaSetID != "" && cr.LastSeenReplicaSetID != "" && cr.LastSeenReplicaSetID != c.cfg.ReplicaSetID {
 		return true
 	}
@@ -641,9 +705,29 @@ func (c *Controller) healthMap(now time.Time) map[string]healthState {
 		if strings.Contains(reason, "exit") || strings.Contains(reason, "exited") || strings.Contains(reason, "terminated") || strings.Contains(reason, "shutdown") {
 			state.fatal = true
 		}
+		// Member stuck in RECOVERING/STARTUP beyond the agent threshold must not block election or dependents
+		if isMongoStuck(s.Reason) {
+			state.healthy = false
+			state.fatal = true
+		}
 		h[s.ID] = state
 	}
 	return h
+}
+
+func isMongoStuck(reason string) bool {
+	if reason == "" {
+		return false
+	}
+	var note struct {
+		Mongo struct {
+			Stuck bool `json:"stuck"`
+		} `json:"mongo"`
+	}
+	if err := json.Unmarshal([]byte(reason), &note); err != nil {
+		return false
+	}
+	return note.Mongo.Stuck
 }
 
 type healthState struct {

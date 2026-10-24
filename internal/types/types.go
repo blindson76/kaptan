@@ -10,10 +10,10 @@ const (
 )
 
 type CandidateReport struct {
-	ID   string        `json:"id"`
-	Kind CandidateKind `json:"kind"`
-	Host string        `json:"host"`
-	Addr string        `json:"addr,omitempty"`
+	ID   string            `json:"id"`
+	Kind CandidateKind     `json:"kind"`
+	Host string            `json:"host"`
+	Addr string            `json:"addr,omitempty"`
 	Meta map[string]string `json:"meta,omitempty"`
 
 	Eligible bool   `json:"eligible"`
@@ -27,6 +27,7 @@ type CandidateReport struct {
 	LastSeenReplicaSetUUID string    `json:"lastSeenReplicaSetUUID,omitempty"` // replSet UUID
 	LastTerm               int64     `json:"lastTerm,omitempty"`
 	LastOplogTs            time.Time `json:"lastOplogTs,omitempty"`
+	FirstOplogTs           time.Time `json:"firstOplogTs,omitempty"` // oldest oplog entry (start of the oplog window)
 
 	// Kafka hints (offline probe may fill these)
 	KafkaClusterID        string   `json:"kafkaClusterId,omitempty"` // from meta.properties cluster.id

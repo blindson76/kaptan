@@ -166,6 +166,8 @@ type MongoAgentConfig struct {
 	AdminUser   string `yaml:"admin_user"`
 	AdminPass   string `yaml:"admin_pass"`
 
+	RecoveringTimeout time.Duration `yaml:"recovering_timeout"`
+
 	Service ServiceConfig `yaml:"service"`
 }
 
